@@ -95,3 +95,13 @@ Rollen).
 | *Geen toestemming voor deze actie* | Je rol mag geen afspraken maken, wijzigen of verwijderen. Vraag een beheerder. |
 | *De sessie is verlopen* | Herlaad de pagina en log opnieuw in. |
 | *Deze afspraak hoort niet (meer) bij een herhalende reeks* | Iemand heeft hem losgekoppeld of verwijderd. Herlaad de kalender. |
+| *De server gaf een onverwacht antwoord* | Herlaad de pagina en probeer het opnieuw. Blijft het gebeuren, dan kan een beheerder kijken in `storage/logs/` van de Easy!Appointments-installatie (regels die beginnen met "Recurring appointments"). |
+
+## Mist er iets?
+
+| Wat je ziet | Wat te doen |
+|---|---|
+| Geen schakelaar **Deze afspraak herhalen** | Die staat er alleen bij nieuwe afspraken, niet als je een bestaande opent. Controleer anders Instellingen → Boeking → *Medewerkers kunnen herhalende afspraken maken*. Na een update van Easy!Appointments draait de beheerder het installatieprogramma opnieuw. |
+| Gele balk "nog niet ingesteld" op de kalender | Een beheerder klikt op **Nu instellen**. |
+| Klanten zien de keuze Herhalen niet | Controleer Instellingen → Boeking → *Klanten kunnen op de boekingspagina een herhalende afspraak boeken*, en sla op. Bij het verzetten van een bestaande afspraak verschijnt de keuze nooit. |
+| Minder afspraken dan gevraagd | Die data waren niet vrij. Het venster (medewerkers) of de bevestigingspagina (klanten) toont ze. |

@@ -92,3 +92,13 @@ Roles).
 | *You do not have permission to do this* | Your role may not add, change or delete appointments. Ask an administrator. |
 | *Your session has expired* | Reload the page and log in again. |
 | *This appointment is no longer part of a repeating series* | Someone detached or deleted it. Reload the calendar. |
+| *The server gave an unexpected answer* | Reload and try again. If it keeps happening, an administrator can look in `storage/logs/` of the Easy!Appointments installation (lines starting with "Recurring appointments"). |
+
+## Something is missing?
+
+| What you see | What to do |
+|---|---|
+| No **Repeat this appointment** switch | It only shows for new appointments, not when you open an existing one. Otherwise check Settings → Booking → *Staff can create repeating appointments*. After an Easy!Appointments update, the administrator runs the installer again. |
+| Yellow banner "not set up yet" on the calendar | An administrator clicks **Set up now**. |
+| Customers do not see the Repeat choice | Check Settings → Booking → *Customers can book a repeating appointment*, and save. It never shows when a customer reschedules an existing appointment. |
+| Fewer appointments than asked for | Those dates were not free. The dialog (staff) or the confirmation page (customers) lists them. |
