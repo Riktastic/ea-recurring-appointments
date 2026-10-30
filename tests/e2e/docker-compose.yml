@@ -1,0 +1,29 @@
+# Throwaway Easy!Appointments + MySQL for the end-to-end test. See tests/e2e/README.md.
+#
+# EA_PATH must point to a COPY of an Easy!Appointments installation (with vendor/ and built assets), whose config.php
+# is replaced by tests/e2e/config.php. Never point it at a production installation: the test resets the database.
+name: ea-recurring-e2e
+
+services:
+  db:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: root-test
+      MYSQL_DATABASE: easyappointments
+      MYSQL_USER: ea
+      MYSQL_PASSWORD: ea-test
+    healthcheck:
+      test: ['CMD', 'mysqladmin', 'ping', '-h', 'localhost', '-proot-test']
+      interval: 3s
+      retries: 40
+
+  web:
+    build: .
+    ports:
+      - '8089:80'
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ${EA_PATH:?Set EA_PATH to a copy of an Easy!Appointments installation}:/var/www/html
+      - ../..:/plugin:ro

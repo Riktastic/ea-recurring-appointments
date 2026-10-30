@@ -1,0 +1,48 @@
+name: Release
+
+# Push a tag like v1.0.0 to build the installable zip and publish it as a GitHub release.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+
+      - name: Test
+        run: php tests/run.php
+
+      - name: Check that the tag matches the extension version
+        run: |
+          version="$(sed -n "s/.*public const VERSION = '\([^']*\)'.*/\1/p" src/application/controllers/Recurring_appointments.php)"
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match Recurring_appointments::VERSION ${version}" >&2
+            exit 1
+          fi
+          grep -q "^## \[${version}\]" CHANGELOG.md || { echo "CHANGELOG.md has no entry for ${version}" >&2; exit 1; }
+
+      - name: Build zip
+        run: |
+          name="easyappointments-recurring-appointments-${GITHUB_REF_NAME}"
+          mkdir -p "build/${name}"
+          cp -r src sql docs install.php README.md LICENSE CHANGELOG.md "build/${name}/"
+          (cd build && zip -r "${name}.zip" "${name}")
+          echo "ZIP=build/${name}.zip" >> "$GITHUB_ENV"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '/^## \[/{p = index($0, "[" v "]") > 0; next} p' CHANGELOG.md > notes.md
+          gh release create "${GITHUB_REF_NAME}" "${ZIP}" --title "${GITHUB_REF_NAME}" --notes-file notes.md
