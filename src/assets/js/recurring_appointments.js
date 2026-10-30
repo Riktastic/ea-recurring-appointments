@@ -119,8 +119,14 @@
         return time.isValid() ? time.format(vars('time_format') === 'regular' ? 'h:mm a' : 'HH:mm') : value;
     }
 
+    /**
+     * HTML-escape a value for use in element content and in quoted attributes (quotes included).
+     */
     function escape(value) {
-        return $('<div>').text(value ?? '').html();
+        return String(value ?? '').replace(
+            /[&<>"']/g,
+            (char) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[char],
+        );
     }
 
     function can(action) {
@@ -241,6 +247,43 @@
         return t(String(nth) === '-1' ? 'nth_last' : 'nth_' + nth);
     }
 
+    /**
+     * Most appointments one series may have (Settings → Booking), as enforced on the server.
+     */
+    function maxOccurrences() {
+        return Number(settings.max_occurrences) || Number(config.defaults?.max_occurrences) || 400;
+    }
+
+    /**
+     * Unit next to "Every [n]" for each frequency.
+     */
+    const INTERVAL_UNITS = {
+        daily: 'days',
+        weekly: 'weeks',
+        monthly_weekday: 'months',
+        monthly_day: 'months',
+        yearly: 'years',
+    };
+
+    /**
+     * "14 March" in the user's language, for yearly series.
+     */
+    function dayAndMonth(month, day) {
+        const date = new Date(2000, Number(month) - 1, Number(day));
+
+        try {
+            return new Intl.DateTimeFormat(config.locale || undefined, {day: 'numeric', month: 'long'}).format(date);
+        } catch (error) {
+            return moment(date).format('D MMMM');
+        }
+    }
+
+    function startDate() {
+        const start = App.Utils.UI.getDateTimePickerValue($('#start-datetime'));
+
+        return start ? moment(start) : null;
+    }
+
     function buildRepeatSection() {
         const weekdayChecks = orderedWeekdays()
             .map(
@@ -268,9 +311,11 @@
                     <div class="row g-2 align-items-center mb-2">
                         <div class="col-sm-7">
                             <select id="ra-frequency" class="form-select form-select-sm" aria-label="${escape(t('repeat'))}">
+                                <option value="daily">${escape(t('frequency_daily'))}</option>
                                 <option value="weekly">${escape(t('frequency_weekly'))}</option>
                                 <option value="monthly_weekday">${escape(t('frequency_monthly_weekday'))}</option>
                                 <option value="monthly_day">${escape(t('frequency_monthly_day'))}</option>
+                                <option value="yearly">${escape(t('frequency_yearly'))}</option>
                             </select>
                         </div>
                         <div class="col-sm-5 d-flex align-items-center gap-2">
@@ -298,7 +343,7 @@
                             <input class="form-check-input" type="radio" name="ra-end" id="ra-end-count" checked>
                             <label class="form-check-label" for="ra-end-count">${escape(t('after'))}</label>
                         </div>
-                        <input id="ra-count" type="number" min="1" max="260" value="10" class="form-control form-control-sm" style="width: 5em;">
+                        <input id="ra-count" type="number" min="1" max="${maxOccurrences()}" value="10" class="form-control form-control-sm" style="width: 5em;">
                         <span>${escape(t('occurrences'))}</span>
                         <div class="form-check form-check-inline m-0 ms-3">
                             <input class="form-check-input" type="radio" name="ra-end" id="ra-end-until">
@@ -373,7 +418,7 @@
         toggleBlock($('#ra-weekly'), frequency === 'weekly');
         toggleBlock($('#ra-monthly-weekday'), frequency === 'monthly_weekday');
         toggleBlock($('#ra-monthly-day'), frequency === 'monthly_day');
-        $('#ra-interval-unit').text(frequency === 'weekly' ? t('weeks') : t('months'));
+        $('#ra-interval-unit').text(t(INTERVAL_UNITS[frequency] || 'weeks'));
         $('#ra-options').toggle($('#ra-enabled').is(':checked'));
         $('#ra-summary').text(describeRule(getRule()));
     }
@@ -420,8 +465,12 @@
         } else if (frequency === 'monthly_weekday') {
             rule.nth = $('#ra-nth').val();
             rule.weekday = $('#ra-weekday').val();
-        } else {
+        } else if (frequency === 'monthly_day') {
             rule.day = $('#ra-day').val();
+        } else if (frequency === 'yearly' && startDate()) {
+            // Every year on the date of the appointment.
+            rule.month = startDate().month() + 1;
+            rule.day = startDate().date();
         }
 
         if ($('#ra-end-until').is(':checked')) {
@@ -447,7 +496,11 @@
 
         let text;
 
-        if (rule.frequency === 'weekly') {
+        if (rule.frequency === 'daily') {
+            text = t('summary_daily' + suffix, {interval: rule.interval});
+        } else if (rule.frequency === 'yearly') {
+            text = t('summary_yearly' + suffix, {interval: rule.interval, date: dayAndMonth(rule.month, rule.day)});
+        } else if (rule.frequency === 'weekly') {
             const days = (rule.weekdays || []).map((day) => localeWeekday(day, 'long')).join(', ');
             text = t('summary_weekly' + suffix, {interval: rule.interval, days});
         } else if (rule.frequency === 'monthly_weekday') {
@@ -682,7 +735,10 @@
             .fail(showError);
     }
 
-    function deleteSeries(scope) {
+    /**
+     * Delete occurrences after a confirmation, from the series panel (the open appointment) or the calendar pop-up.
+     */
+    function deleteSeries(scope, appointmentId = $('#appointment-id').val()) {
         const labels = {single: t('delete_single'), following: t('delete_following'), all: t('delete_all')};
 
         App.Utils.Message.show(escape(t('title')), escape(t('confirm_delete', {scope: labels[scope]})), [
@@ -694,7 +750,7 @@
                     modal.hide();
 
                     post('recurring_appointments/delete', {
-                        appointment_id: $('#appointment-id').val(),
+                        appointment_id: appointmentId,
                         scope,
                         notify: seriesNotifyMode(),
                     })
@@ -706,6 +762,7 @@
 
                             notify(tCount('series_deleted', response.deleted));
                             $('#appointments-modal').modal('hide');
+                            $('#calendar .close-popover').first().trigger('click');
                             reloadCalendar();
                         })
                         .fail(showError);
@@ -740,9 +797,22 @@
                 return;
             }
 
-            $('#appointments-modal .modal-body').prepend(buildSeriesPanel(response.series));
+            const $panel = buildSeriesPanel(response.series);
+
+            if (highlightSeriesPanel) {
+                $panel.addClass('border border-2 border-primary');
+                $panel.children().first().append($('<div class="fw-bold mt-1">').text(t('edit_series_hint')));
+            }
+
+            highlightSeriesPanel = false;
+
+            $('#appointments-modal .modal-body').prepend($panel);
+            $panel[0].scrollIntoView({block: 'nearest'});
         });
     }
+
+    // Set by the pop-up's "Change series" button for the next series panel.
+    let highlightSeriesPanel = false;
 
     // ------------------------------------------------------------------------------------------------------------
     // Calendar markers: a ↻ icon on every appointment of a series, and the series line in the pop-up
@@ -845,7 +915,20 @@
 
         refreshMarkers(calendar);
 
-        // The core pop-up of an appointment: add "Occurrence 2 of 10 (every Wednesday …)".
+        // The core pop-up of an appointment: add "Occurrence 2 of 10 (every Wednesday …)" and, for users who may
+        // delete, the series delete actions. Its own delete button keeps deleting only this occurrence, and its edit
+        // button opens the appointment window with the series panel.
+        $(document).on('click', '.ra-popover-delete', (event) => {
+            deleteSeries($(event.currentTarget).data('scope'), $(event.currentTarget).data('appointmentId'));
+        });
+
+        // "Change series": open the appointment window through the pop-up's own edit button, with the series panel
+        // highlighted and a hint, since changing a series needs the full form (time, provider, ...).
+        $(document).on('click', '.ra-popover-edit', () => {
+            highlightSeriesPanel = true;
+            $('#calendar .popover .edit-popover').first().trigger('click');
+        });
+
         $(document).on('shown.bs.popover', (event) => {
             const id = event.target?.dataset?.raAppointmentId;
 
@@ -861,8 +944,8 @@
                     return;
                 }
 
-                $body.prepend(
-                    $('<div class="ra-popover-series">').text(
+                const $info = $('<div class="ra-popover-series">').append(
+                    $('<div>').text(
                         '↻ ' +
                             t('series_info', {
                                 position: series.position ?? '?',
@@ -871,6 +954,32 @@
                             }),
                     ),
                 );
+
+                const $actions = $('<div class="d-flex flex-wrap gap-1 mt-1">');
+
+                if (can('edit')) {
+                    $actions.append(
+                        $('<button type="button" class="btn btn-sm btn-outline-primary ra-popover-edit">').text(
+                            t('edit_series'),
+                        ),
+                    );
+                }
+
+                if (can('delete')) {
+                    const button = (scope, label) =>
+                        $('<button type="button" class="btn btn-sm btn-outline-danger ra-popover-delete">')
+                            .attr('data-scope', scope)
+                            .attr('data-appointment-id', id)
+                            .text(t(label));
+
+                    $actions.append(button('following', 'delete_following'), button('all', 'delete_all'));
+                }
+
+                if ($actions.children().length) {
+                    $info.append($actions);
+                }
+
+                $body.prepend($info);
             });
         });
     }

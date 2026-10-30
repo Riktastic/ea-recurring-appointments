@@ -38,6 +38,8 @@ Preparation: one provider with a working plan of Mon–Fri 09:00–17:00 and a 1
 - [ ] A **new** customer filled in the window is created once.
 - [ ] With the switch **off**, saving behaves exactly as before.
 
+- [ ] Daily, 5 times → 5 days in a row; weekend days are reported as days off. Yearly → the same date every year.
+
 ### Conflicts
 
 - [ ] A normal appointment on the 2nd Wednesday, then a weekly series over it → the dialog lists that date
@@ -48,7 +50,8 @@ Preparation: one provider with a working plan of Mon–Fri 09:00–17:00 and a 1
 ### Edit and delete
 
 - [ ] Series appointments show ↻ on the calendar in day, week and month view; normal appointments do not. Clicking
-      one shows the series line in the pop-up. After detaching or deleting, the marker updates on the next reload.
+      one shows the series line and **Delete this and following** / **Delete entire series** in the pop-up (only
+      for roles that may delete). After detaching or deleting, the marker updates on the next reload.
 - [ ] Opening an occurrence shows "Occurrence n of N (summary)". A normal appointment shows no panel.
 - [ ] Normal **Save** moves only that occurrence. **Save this and following** changes it and the later ones. **Save
       all** changes every occurrence. With only the time changed, each one keeps its date.
@@ -81,6 +84,8 @@ Preparation: one provider with a working plan of Mon–Fri 09:00–17:00 and a 1
 - [ ] Book every week 4 times with one of the dates already taken → the confirmation page lists 3 booked dates and the
       taken one under "Not available", in the customer's timezone. The calendar shows 3 appointments with ↻.
 - [ ] With *one per appointment*, the customer gets an e-mail per appointment; with *only the first*, one e-mail.
+- [ ] Every week with Monday added and an end date → Monday and the picked weekday until that date. The picked
+      weekday cannot be switched off.
 - [ ] Rescheduling an existing appointment through its e-mail link shows no Repeat choice.
 - [ ] Customers off → the booking page is exactly as before.
 

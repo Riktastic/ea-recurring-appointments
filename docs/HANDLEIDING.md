@@ -14,10 +14,12 @@ In de kalender staat bij afspraken die bij een reeks horen een **↻** voor de n
 2. Vul de afspraak in zoals altijd: dienst, medewerker, klant, datum en tijd.
 3. Zet **Deze afspraak herhalen** aan.
 4. Kies hoe vaak:
+   - **Dagelijks**: elke dag, of elke 2, 3 … dagen.
    - **Wekelijks**: kies de weekdag(en) en *elke 1 week* (of elke 2, 3 … weken).
    - **Maandelijks op een weekdag**: bijvoorbeeld *de eerste maandag*.
    - **Maandelijks op een dagnummer**: bijvoorbeeld *de 15e*. Maanden zonder die dag (zoals de 31e in april) worden
      overgeslagen.
+   - **Jaarlijks (zelfde datum)**: elk jaar op de datum van de afspraak.
 5. Kies wanneer het stopt: **Na** een aantal keer, of **Op datum**.
 6. Optioneel: **Data bekijken** toont alle data en waarschuwt bij problemen.
 7. Kies **Klant en medewerker informeren**: *Eén keer (eerste afspraak)* is meestal het beste.
@@ -34,8 +36,8 @@ Er wordt nooit dubbel geboekt zonder dat je zelf *Toch boeken* kiest.
 
 ## Een herhalende afspraak wijzigen
 
-Klik op de afspraak en daarna op **Bewerk**. Bovenaan het venster staat bijvoorbeeld *"Afspraak 3 van 10 van een
-herhalende afspraak (elke week op woensdag)"*.
+Klik op de afspraak en daarna op **Reeks wijzigen** (of **Bewerk**). Bovenaan het venster staat bijvoorbeeld
+*"Afspraak 3 van 10 van een herhalende afspraak (elke week op woensdag)"*.
 
 Wijzig wat nodig is (tijd, duur, opmerkingen, medewerker …) en druk op:
 
@@ -60,14 +62,20 @@ Open in hetzelfde venster **Verwijder** en kies:
 - **Deze en volgende verwijderen**
 - **Hele reeks verwijderen**
 
-Je moet altijd eerst bevestigen. De gewone verwijderknop in het kleine pop-upvenster in de kalender verwijdert alleen
-die ene afspraak.
+Je moet altijd eerst bevestigen.
+
+Het kleine pop-upvenster dat opent als je in de kalender op een afspraak klikt, heeft ook **Deze en volgende
+verwijderen** en **Hele reeks verwijderen**. De gewone knop **Verwijder** daarin verwijdert alleen die ene afspraak.
 
 ## Klanten die een herhaling boeken (als de beheerder dit heeft aangezet)
 
-Op de boekingspagina zien klanten onder de tijden **Herhalen** met *Niet herhalen*, *Elke week*, *Elke 2 weken*,
-*Elke 4 weken* en *Elke maand (zelfde weekdag)*, en het aantal afspraken. Alleen tijden die echt vrij zijn worden
-geboekt. Na het boeken ziet de klant welke data geboekt zijn en welke niet beschikbaar waren.
+Op de boekingspagina zien klanten onder de tijden **Herhalen** met *Niet herhalen*, *Elke dag*, *Elke week*,
+*Elke 2 weken*, *Elke 4 weken*, *Elke maand (zelfde weekdag)* en *Elk jaar (zelfde datum)*. Bij de wekelijkse keuzes kunnen ze extra dagen aanzetten
+(bijvoorbeeld maandag en vrijdag). Ze laten het stoppen na een aantal afspraken of op een datum. Alleen tijden die
+echt vrij zijn worden geboekt. Na het boeken ziet de klant welke data geboekt zijn en welke niet beschikbaar waren.
+
+Koos de klant *maakt mij niet uit* en is de eerste medewerker op een datum bezet, dan neemt een andere medewerker die
+de dienst aanbiedt en vrij is die datum over.
 
 Deze afspraken staan in je kalender met de **↻** en zijn te wijzigen zoals elke andere reeks.
 
@@ -77,6 +85,8 @@ Instellingen → Boeking, onderdeel **Herhalende afspraken** onderaan. Druk daar
 
 - **Medewerkers kunnen herhalende afspraken maken in de kalender**: aan of uit voor medewerkers.
 - **"Deze afspraak herhalen" standaard aanzetten bij nieuwe afspraken**: nieuwe afspraken beginnen met Herhalen aan.
+- **Maximaal aantal afspraken in één reeks**: beschermt tegen een typfout in de einddatum (standaard 400, maximaal
+  1000).
 - **Klanten kunnen op de boekingspagina een herhalende afspraak boeken**: toont de keuze Herhalen aan klanten.
 - **Maximaal aantal afspraken per boeking**: het meeste dat een klant in één keer kan boeken (de eerste meegeteld).
 - **Bevestigingsmails**: één e-mail per afspraak (elk met een eigen annuleerlink) of alleen voor de eerste.
@@ -91,7 +101,7 @@ Rollen).
 | *Conflict met de planning van de medewerker op 2 van de 10 data* | Twee data kunnen niet; kies overslaan, toch boeken of annuleren. |
 | *Alle data botsen met de planning van de medewerker* | Op dit tijdstip kan geen enkele datum. Kies een ander tijdstip. |
 | *Het herhaalpatroon levert geen datum op voor het einde* | Controleer de gekozen weekdagen en de einddatum. |
-| *Dit zou meer dan 260 afspraken opleveren* | Kies een eerdere einddatum of minder keer. |
+| *Dit zou meer dan 400 afspraken opleveren* | Kies een eerdere einddatum of minder keer, of vraag een beheerder het maximum te verhogen. |
 | *Geen toestemming voor deze actie* | Je rol mag geen afspraken maken, wijzigen of verwijderen. Vraag een beheerder. |
 | *De sessie is verlopen* | Herlaad de pagina en log opnieuw in. |
 | *Deze afspraak hoort niet (meer) bij een herhalende reeks* | Iemand heeft hem losgekoppeld of verwijderd. Herlaad de kalender. |

@@ -21,6 +21,19 @@ and versions follow [Semantic Versioning](https://semver.org).
   confirmation e-mails per appointment or only for the first.
 - Plain-language user guide in English and Dutch, troubleshooting table, and clear translated messages for missing
   permissions, an expired session and unexpected server answers.
+- Daily and yearly patterns (29 February: leap years only).
+- The maximum per series is a setting (default 400, up to 1000).
+- "Delete this and following" and "Delete entire series" in the calendar pop-up.
+- Customers can pick several weekdays and an end date; with "Any provider", a busy date goes to another free provider.
+- REST API: `/api/v1/appointment_series` to list, show, create, change and delete series.
+- Customers can also book every day and every year.
+- "Change series" in the calendar pop-up opens the series panel with a short instruction.
+
+### Security
+
+- HTML escaping in the browser scripts now also escapes quotes, so values in HTML attributes cannot add attributes.
+- Series details only list the occurrences of providers the user may see.
+- End-to-end tests with SQL injection and XSS attempts.
 - Notification choice per series: once, for every occurrence, or none.
 - Translations: English, Dutch, German, French and Spanish, with an English fallback for other languages. Weekday
   names and common words come from the Easy!Appointments translations.

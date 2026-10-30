@@ -157,6 +157,51 @@ final class Client
     }
 }
 
+/**
+ * Call the REST API with Basic auth (admin credentials) and a JSON body.
+ */
+function api_request(string $base_url, string $username, string $password, string $method, string $path, ?array $body = null): array
+{
+    $curl = curl_init($base_url . $path);
+
+    curl_setopt_array($curl, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CUSTOMREQUEST => $method,
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Accept: application/json'],
+    ]);
+
+    if ($username !== '') {
+        curl_setopt($curl, CURLOPT_USERPWD, $username . ':' . $password);
+    }
+
+    if ($body !== null) {
+        curl_setopt($curl, CURLOPT_POSTFIELDS, json_encode($body));
+    }
+
+    $response = (string) curl_exec($curl);
+    $status = curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
+    curl_close($curl);
+
+    return ['status' => $status, 'body' => $response, 'json' => json_decode($response, true)];
+}
+
+/**
+ * The core rate limiter counts requests per IP address in its file cache. The suite sends far more requests than a
+ * person would, so it clears those counters (only when --ea-path is given, i.e. on a throwaway copy).
+ */
+function reset_rate_limit(): void
+{
+    global $options;
+
+    if (empty($options['ea-path'])) {
+        return;
+    }
+
+    foreach (glob(rtrim($options['ea-path'], '/') . '/storage/cache/rate_limit*') ?: [] as $file) {
+        unlink($file);
+    }
+}
+
 // --------------------------------------------------------------------------------------------------------------------
 // Fixture
 // --------------------------------------------------------------------------------------------------------------------
@@ -182,12 +227,7 @@ function ea_cli(string $ea_path, array $arguments): string
 if (!empty($options['ea-path'])) {
     echo "Reset\n";
 
-    // The core rate limiter counts requests in its file cache; running the suite twice in a row would hit it.
-    foreach (glob(rtrim($options['ea-path'], '/') . '/storage/cache/*') ?: [] as $file) {
-        if (is_file($file) && basename($file) !== 'index.html') {
-            unlink($file);
-        }
-    }
+    reset_rate_limit();
 
     // With the extension installed, the core "migrate fresh" (all migrations down and up again) must still work: the
     // extension may never block core migrations.
@@ -482,7 +522,7 @@ test('validation errors are translated (Dutch)', function () use ($admin, $base)
     ]);
 
     check(
-        str_contains($response['json']['message'] ?? '', 'Het aantal keer moet tussen 1 en 260 liggen'),
+        str_contains($response['json']['message'] ?? '', 'Het aantal keer moet tussen 1 en 400 liggen'),
         'Dutch error',
         $response['json'] ?? $response['body'],
     );
@@ -712,6 +752,7 @@ test('delete entire series removes every occurrence and the series', function ()
 });
 
 echo "\nPermissions and languages\n";
+reset_rate_limit();
 
 test('a provider cannot create a series for another provider', function () use ($base_url, $base) {
     global $provider_id;
@@ -760,7 +801,7 @@ test('German user: German strings and errors, English fallback in the page confi
         'rule' => ['frequency' => 'weekly', 'count' => 999],
     ]);
 
-    check(str_contains($response['json']['message'] ?? '', 'Die Anzahl muss zwischen 1 und 260 liegen'), 'German error', $response['json'] ?? $response['body']);
+    check(str_contains($response['json']['message'] ?? '', 'Die Anzahl muss zwischen 1 und 400 liegen'), 'German error', $response['json'] ?? $response['body']);
 });
 
 test('language without extension translations (Greek) falls back to English', function () use ($base_url, $admin_user, $admin_pass) {
@@ -793,7 +834,7 @@ function set_setting(string $name, ?string $value): void
 /**
  * Book like a customer on the public booking page, optionally with a repeat choice.
  */
-function book_as_customer(Client $client, string $start, ?array $repeat, bool $manage_mode = false): array
+function book_as_customer(Client $client, string $start, ?array $repeat, bool $manage_mode = false, bool $any_provider = false): array
 {
     global $provider_id, $service_id;
 
@@ -807,7 +848,7 @@ function book_as_customer(Client $client, string $start, ?array $repeat, bool $m
         'post_data' => [
             'appointment' => [
                 'id_services' => $service_id,
-                'id_users_provider' => $provider_id,
+                'id_users_provider' => $any_provider ? 'any-provider' : $provider_id,
                 'start_datetime' => $start,
                 'end_datetime' => $end,
             ],
@@ -915,7 +956,7 @@ test('customer books every week, a taken date is skipped and shown', function ()
 test('customer requests are limited: unknown pattern ignored, count capped at the maximum', function () use ($base_url, $thursday) {
     set_setting('booking_max', '2');
 
-    $tampered = book_as_customer(new Client($base_url), $thursday->format('Y-m-d') . ' 09:00:00', ['pattern' => 'daily', 'count' => 50]);
+    $tampered = book_as_customer(new Client($base_url), $thursday->format('Y-m-d') . ' 09:00:00', ['pattern' => 'hourly', 'count' => 50]);
     check(!empty($tampered['json']['appointment_hash']) && !isset($tampered['json']['recurring']), 'unknown pattern', $tampered['json'] ?? $tampered['body']);
 
     $capped = book_as_customer(new Client($base_url), $thursday->format('Y-m-d') . ' 10:00:00', ['pattern' => 'weekly', 'count' => 50]);
@@ -931,6 +972,354 @@ test('rescheduling (manage mode) never adds a repeat', function () use ($base_ur
     check(!isset($response['json']['recurring']), 'manage mode extended', $response['json'] ?? $response['body']);
 
     set_setting('booking_enabled', null);
+});
+
+echo "\nDaily, yearly and the maximum\n";
+reset_rate_limit();
+
+test('every day and every year', function () use ($admin, $base) {
+    $daily = $admin->post('recurring_appointments/preview', [
+        'appointment_data' => appointment($base, '10:00', '11:00'),
+        'rule' => ['frequency' => 'daily', 'count' => 5],
+    ]);
+
+    $dates = array_column($daily['json']['occurrences'] ?? [], 'date');
+    check(count($dates) === 5 && $dates[1] === (new DateTimeImmutable($base))->modify('+1 day')->format('Y-m-d'), 'daily', $daily['json'] ?? $daily['body']);
+
+    // The weekend days are reported as days off, so nothing is booked silently.
+    $weekend = array_filter($daily['json']['occurrences'], fn($o) => in_array((new DateTimeImmutable($o['date']))->format('N'), ['6', '7'], true));
+    check(count($weekend) === 2 && array_column(array_merge(...array_column($weekend, 'conflicts')), 'key') === ['conflict_day_off', 'conflict_day_off'], 'weekend conflicts', $weekend);
+
+    $yearly = $admin->post('recurring_appointments/preview', [
+        'appointment_data' => appointment($base, '10:00', '11:00'),
+        'rule' => ['frequency' => 'yearly', 'count' => 3],
+    ]);
+
+    check(
+        array_column($yearly['json']['occurrences'] ?? [], 'date') === [
+            $base,
+            (new DateTimeImmutable($base))->modify('+1 year')->format('Y-m-d'),
+            (new DateTimeImmutable($base))->modify('+2 years')->format('Y-m-d'),
+        ],
+        'yearly',
+        $yearly['json'] ?? $yearly['body'],
+    );
+});
+
+test('the maximum per series follows the setting', function () use ($admin, $base) {
+    set_setting('max_occurrences', '5');
+
+    $response = $admin->post('recurring_appointments/preview', [
+        'appointment_data' => appointment($base, '10:00', '11:00'),
+        'rule' => ['frequency' => 'daily', 'count' => 6],
+    ]);
+
+    set_setting('max_occurrences', null);
+
+    check(($response['json']['success'] ?? true) === false && str_contains($response['json']['message'] ?? '', '5'), 'refused with the maximum in the message', $response['json'] ?? $response['body']);
+});
+
+echo "\nCustomers: weekdays, end date, any provider\n";
+
+test('customer picks two weekdays and an end date', function () use ($base_url, $thursday) {
+    set_setting('booking_enabled', '1');
+
+    // Thursday + Friday at 16:00 (a free time in the tests above), until the Friday a week later. Dates stay within
+    // the default future booking limit of 90 days.
+    $first = $thursday->modify('+1 week');
+    $until = $first->modify('+8 days')->format('Y-m-d');
+
+    $response = book_as_customer(new Client($base_url), $first->format('Y-m-d') . ' 16:00:00', [
+        'pattern' => 'weekly',
+        'weekdays' => [5],
+        'until' => $until,
+    ]);
+
+    $rows = q(
+        'SELECT a.start_datetime FROM ' . t('appointments') . ' a JOIN ' . t('appointment_series_occurrences') . ' o ON o.id_appointments = a.id' .
+            ' WHERE o.id_appointment_series = (SELECT fo.id_appointment_series FROM ' . t('appointment_series_occurrences') . ' fo JOIN ' . t('appointments') .
+            ' f ON f.id = fo.id_appointments WHERE f.hash = ?) ORDER BY a.start_datetime',
+        [$response['json']['appointment_hash'] ?? ''],
+    );
+
+    $weekdays = array_map(fn($row) => (new DateTimeImmutable($row['start_datetime']))->format('D'), $rows);
+    check($weekdays === ['Thu', 'Fri', 'Thu', 'Fri'], 'Thu, Fri, Thu, Fri', $rows);
+});
+
+test('an end date asking for more than the maximum is capped and reported', function () use ($base_url, $thursday) {
+    set_setting('booking_max', '3');
+
+    $first = $thursday;
+
+    // 15:30 is free in the tests above on this and the next Thursdays.
+    $response = book_as_customer(new Client($base_url), $first->format('Y-m-d') . ' 15:30:00', [
+        'pattern' => 'weekly',
+        'until' => $first->modify('+10 weeks')->format('Y-m-d'),
+    ]);
+
+    set_setting('booking_max', null);
+
+    check(($response['json']['recurring']['booked'] ?? 0) === 3, 'three booked', $response['json'] ?? $response['body']);
+});
+
+test('customer books every day: the day off is skipped', function () use ($base_url, $thursday) {
+    // Thursday, Friday, Saturday (not a working day) at 09:30.
+    $response = book_as_customer(new Client($base_url), $thursday->modify('+3 weeks')->format('Y-m-d') . ' 09:30:00', [
+        'pattern' => 'daily',
+        'count' => 3,
+    ]);
+
+    check(($response['json']['recurring'] ?? null) === ['booked' => 2, 'skipped' => 1], 'Thu + Fri booked, Sat skipped', $response['json'] ?? $response['body']);
+});
+
+test('customer books every year: dates past the future booking limit are skipped', function () use ($base_url, $thursday) {
+    $response = book_as_customer(new Client($base_url), $thursday->modify('+3 weeks')->format('Y-m-d') . ' 10:30:00', [
+        'pattern' => 'yearly',
+        'count' => 2,
+    ]);
+
+    check(($response['json']['recurring'] ?? null) === ['booked' => 1, 'skipped' => 1], 'next year is past the 90 day limit', $response['json'] ?? $response['body']);
+});
+
+$second_provider_id = 0;
+
+test('any provider: a taken date goes to another provider of the service', function () use ($admin, $base_url, $thursday, $working_plan, $service_id, &$second_provider_id, $admin_user, $admin_pass) {
+    // A second provider through the core REST API, with the same working plan and service.
+    $created = api_request($base_url, $admin_user, $admin_pass, 'POST', 'api/v1/providers', [
+        'firstName' => 'Second',
+        'lastName' => 'Provider',
+        'email' => 'second.provider@example.org',
+        'phone' => '+10000000077',
+        'timezone' => 'UTC',
+        'services' => [$service_id],
+        'settings' => [
+            'username' => 'ra-second-provider',
+            'password' => 'ra-second-pass-1',
+            'workingPlan' => json_decode($working_plan, true),
+            'notifications' => false,
+            'calendarView' => 'default',
+        ],
+    ]);
+
+    check($created['status'] === 201, 'second provider not created', $created);
+    $second_provider_id = (int) ($created['json']['id'] ?? 0);
+
+    $first = $thursday->modify('+2 weeks');
+
+    // The first provider is taken on the second Thursday.
+    $admin->post('recurring_appointments/create', [
+        'appointment_data' => appointment($first->modify('+1 week')->format('Y-m-d'), '14:00', '15:00'),
+        'customer_data' => customer(),
+        'rule' => ['frequency' => 'weekly', 'count' => 1],
+        'notify' => 'none',
+    ]);
+
+    $response = book_as_customer(new Client($base_url), $first->format('Y-m-d') . ' 14:00:00', ['pattern' => 'weekly', 'count' => 2], false, true);
+
+    check(($response['json']['recurring'] ?? null) === ['booked' => 2, 'skipped' => 0], 'both booked', $response['json'] ?? $response['body']);
+
+    $second = q('SELECT id_users_provider FROM ' . t('appointments') . ' WHERE start_datetime = ? AND id_users_provider = ?', [
+        $first->modify('+1 week')->format('Y-m-d') . ' 14:00:00',
+        $second_provider_id,
+    ]);
+
+    check(count($second) === 1, 'second date should go to the second provider');
+
+    set_setting('booking_enabled', null);
+});
+
+echo "\nREST API\n";
+reset_rate_limit();
+
+test('API: create, list, show and delete a series', function () use ($base_url, $admin_user, $admin_pass, $provider_id, $service_id, $customer_id, $thursday) {
+    $start = $thursday->modify('+12 weeks')->format('Y-m-d');
+
+    $created = api_request($base_url, $admin_user, $admin_pass, 'POST', 'api/v1/appointment_series', [
+        'start' => "{$start} 09:00:00",
+        'end' => "{$start} 10:00:00",
+        'serviceId' => $service_id,
+        'providerId' => $provider_id,
+        'customerId' => $customer_id,
+        'notes' => 'api',
+        'rule' => ['frequency' => 'weekly', 'count' => 3],
+    ]);
+
+    check($created['status'] === 201 && count($created['json']['occurrences'] ?? []) === 3, 'create', $created);
+
+    $id = (int) $created['json']['id'];
+
+    $list = api_request($base_url, $admin_user, $admin_pass, 'GET', 'api/v1/appointment_series?providerId=' . $provider_id);
+    check(in_array($id, array_column($list['json'] ?? [], 'id'), true), 'list', $list);
+
+    $show = api_request($base_url, $admin_user, $admin_pass, 'GET', "api/v1/appointment_series/{$id}");
+    check(($show['json']['rule']['frequency'] ?? '') === 'weekly' && ($show['json']['occurrenceCount'] ?? 0) === 3, 'show', $show);
+
+    $conflict = api_request($base_url, $admin_user, $admin_pass, 'POST', 'api/v1/appointment_series', [
+        'start' => "{$start} 09:00:00",
+        'end' => "{$start} 10:00:00",
+        'serviceId' => $service_id,
+        'providerId' => $provider_id,
+        'customerId' => $customer_id,
+        'rule' => ['frequency' => 'weekly', 'count' => 2],
+    ]);
+    check($conflict['status'] === 409, 'conflict answers 409', $conflict);
+
+    $from = (new DateTimeImmutable($start))->modify('+1 week')->format('Y-m-d');
+    $deleted = api_request($base_url, $admin_user, $admin_pass, 'DELETE', "api/v1/appointment_series/{$id}?from={$from}");
+    check($deleted['status'] === 204, 'delete following', $deleted);
+
+    $after = api_request($base_url, $admin_user, $admin_pass, 'GET', "api/v1/appointment_series/{$id}");
+    check(($after['json']['occurrenceCount'] ?? 0) === 1, 'one left', $after);
+
+    api_request($base_url, $admin_user, $admin_pass, 'DELETE', "api/v1/appointment_series/{$id}");
+    $gone = api_request($base_url, $admin_user, $admin_pass, 'GET', "api/v1/appointment_series/{$id}");
+    check($gone['status'] === 404, 'series gone', $gone);
+});
+
+test('API: change the time of a whole series, then move the following ones a day', function () use ($base_url, $admin_user, $admin_pass, $provider_id, $service_id, $customer_id, $thursday) {
+    $start = $thursday->modify('+13 weeks')->format('Y-m-d');
+
+    $created = api_request($base_url, $admin_user, $admin_pass, 'POST', 'api/v1/appointment_series', [
+        'start' => "{$start} 10:00:00",
+        'end' => "{$start} 11:00:00",
+        'serviceId' => $service_id,
+        'providerId' => $provider_id,
+        'customerId' => $customer_id,
+        'rule' => ['frequency' => 'weekly', 'count' => 3],
+    ]);
+
+    check($created['status'] === 201, 'create', $created);
+    $id = (int) $created['json']['id'];
+
+    // New time for all: 13:00, duration kept, notes changed.
+    $changed = api_request($base_url, $admin_user, $admin_pass, 'PUT', "api/v1/appointment_series/{$id}", [
+        'start' => "{$start} 13:00:00",
+        'notes' => 'changed by API',
+    ]);
+
+    check($changed['status'] === 200, 'update all', $changed);
+    check(
+        array_map(fn($o) => substr($o['start'], 11) . '-' . substr($o['end'], 11), $changed['json']['occurrences'] ?? []) ===
+            ['13:00:00-14:00:00', '13:00:00-14:00:00', '13:00:00-14:00:00'],
+        'times',
+        $changed['json'] ?? $changed['body'],
+    );
+
+    $notes = q('SELECT DISTINCT notes FROM ' . t('appointments') . ' WHERE id IN (' . implode(',', array_column($changed['json']['occurrences'], 'id')) . ')');
+    check(array_column($notes, 'notes') === ['changed by API'], 'notes', $notes);
+
+    // From the second date on, one day later (Thursday → Friday): those become a series of their own.
+    $second = (new DateTimeImmutable($start))->modify('+1 week');
+
+    $moved = api_request($base_url, $admin_user, $admin_pass, 'PUT', "api/v1/appointment_series/{$id}", [
+        'from' => $second->format('Y-m-d'),
+        'start' => $second->modify('+1 day')->format('Y-m-d') . ' 13:00:00',
+    ]);
+
+    check($moved['status'] === 200 && ($moved['json']['id'] ?? 0) !== $id, 'split into a new series', $moved);
+    check(($moved['json']['rule']['weekdays'] ?? null) === [5] && count($moved['json']['occurrences'] ?? []) === 2, 'new series on Friday', $moved['json'] ?? $moved['body']);
+
+    $old = api_request($base_url, $admin_user, $admin_pass, 'GET', "api/v1/appointment_series/{$id}");
+    check(($old['json']['occurrenceCount'] ?? 0) === 1 && ($old['json']['rule']['weekdays'] ?? null) === [4], 'old series keeps its Thursday', $old['json'] ?? $old['body']);
+
+    // A change into a conflict (the break) answers 409 and changes nothing.
+    $conflict = api_request($base_url, $admin_user, $admin_pass, 'PUT', "api/v1/appointment_series/{$id}", ['start' => "{$start} 12:00:00"]);
+    check($conflict['status'] === 409, 'conflict answers 409', $conflict);
+});
+
+test('API: refused without credentials', function () use ($base_url) {
+    $response = api_request($base_url, '', '', 'GET', 'api/v1/appointment_series');
+
+    check($response['status'] === 401, 'expected 401, got ' . $response['status']);
+});
+
+echo "\nSecurity: SQL injection and XSS attempts\n";
+reset_rate_limit();
+
+test('SQL injection in IDs, dates and filters changes nothing', function () use ($admin, $base_url, $admin_user, $admin_pass, $base) {
+    $count = fn() => (int) q('SELECT COUNT(*) AS c FROM ' . t('appointments'))[0]['c'];
+    $series_count = fn() => (int) q('SELECT COUNT(*) AS c FROM ' . t('appointment_series'))[0]['c'];
+    $before = [$count(), $series_count()];
+
+    $markers = $admin->post('recurring_appointments/markers', [
+        'appointment_ids' => ["1 OR 1=1", "1) OR (1=1", "0 UNION SELECT 1,2"],
+    ]);
+    check(($markers['json']['success'] ?? false) === true && (array) ($markers['json']['series'] ?? []) === [], 'markers', $markers['json'] ?? $markers['body']);
+
+    $info = $admin->post('recurring_appointments/info', ['appointment_id' => "1 OR 1=1"]);
+    check(($info['json']['success'] ?? null) !== true || ($info['json']['series'] ?? null) === null, 'info', $info['json'] ?? $info['body']);
+
+    $preview = $admin->post('recurring_appointments/preview', [
+        'appointment_data' => array_merge(appointment($base, '10:00', '11:00'), ['start_datetime' => "{$base} 10:00:00' OR '1'='1"]),
+        'rule' => ['frequency' => 'weekly', 'count' => "2; DROP TABLE ea_appointments"],
+    ]);
+    check(($preview['json']['success'] ?? true) === false, 'preview refused', $preview['json'] ?? $preview['body']);
+
+    $delete = $admin->post('recurring_appointments/delete', ['appointment_id' => "1; DELETE FROM ea_appointments", 'scope' => 'all']);
+    check(($delete['json']['success'] ?? true) !== true, 'delete refused', $delete['json'] ?? $delete['body']);
+
+    $list = api_request($base_url, $admin_user, $admin_pass, 'GET', 'api/v1/appointment_series?providerId=' . rawurlencode('1 OR 1=1'));
+    check($list['status'] === 200 && is_array($list['json']), 'API list', $list);
+
+    $series = q('SELECT id FROM ' . t('appointment_series') . ' ORDER BY id LIMIT 1');
+
+    if ($series) {
+        $id = (int) $series[0]['id'];
+        $api_delete = api_request($base_url, $admin_user, $admin_pass, 'DELETE', "api/v1/appointment_series/{$id}?from=" . rawurlencode("2000-01-01' OR '1'='1"));
+        check($api_delete['status'] !== 204, 'API delete with injected date refused', $api_delete);
+    }
+
+    $customer = book_as_customer(new Client($base_url), (new DateTimeImmutable($base))->modify('+1 day')->format('Y-m-d') . ' 16:30:00', [
+        'pattern' => "weekly' OR '1'='1",
+        'until' => "2030-01-01' OR '1'='1",
+        'weekdays' => ["1 OR 1=1"],
+        'count' => "3 OR 1=1",
+    ]);
+    check(!isset($customer['json']['recurring']), 'booking repeat with injection ignored', $customer['json'] ?? $customer['body']);
+
+    // The customer booking above added exactly one appointment (the core one); nothing else changed.
+    check([$count(), $series_count()] === [$before[0] + (empty($customer['json']['appointment_hash']) ? 0 : 1), $before[1]], 'row counts', [$before, $count(), $series_count()]);
+    check(count(q("SHOW TABLES LIKE 'ea_appointments'")) === 1, 'appointments table still there');
+});
+
+test('script in settings and translations cannot break out of the page config', function () use ($admin) {
+    $payload = '</script><script>window.raXss=1</script>"\'';
+    set_setting('booking_notify', $payload);
+    set_setting('max_occurrences', '5" autofocus onfocus="window.raXss=1');
+
+    foreach (['calendar', 'booking_settings'] as $page) {
+        $body = $admin->get($page)['body'];
+        check(!str_contains($body, '<script>window.raXss=1</script>'), "{$page}: raw script tag in the page");
+        check(!str_contains($body, 'onfocus="window.raXss'), "{$page}: raw attribute in the page");
+    }
+
+    set_setting('booking_notify', null);
+    set_setting('max_occurrences', null);
+});
+
+test('a blocked period is reported, and script in its name is only sent as JSON data', function () use ($admin, $base, $base_url, $admin_user, $admin_pass) {
+    $name = '<img src=x onerror=window.raXss=1>';
+
+    // Directly in the database: the core API is rate limited, and this suite already calls it many times.
+    q(
+        'INSERT INTO ' . t('blocked_periods') . ' (name, start_datetime, end_datetime, notes, create_datetime, update_datetime) VALUES (?, ?, ?, ?, NOW(), NOW())',
+        [$name, "{$base} 00:00:00", "{$base} 23:59:00", ''],
+    );
+
+    check(count(q('SELECT id FROM ' . t('blocked_periods') . ' WHERE name = ?', [$name])) === 1, 'blocked period not created');
+
+    $preview = $admin->post('recurring_appointments/preview', [
+        'appointment_data' => appointment($base, '10:00', '11:00'),
+        'rule' => ['frequency' => 'weekly', 'count' => 1],
+    ]);
+
+    q('DELETE FROM ' . t('blocked_periods') . ' WHERE name = ?', [$name]);
+
+    $conflicts = $preview['json']['occurrences'][0]['conflicts'] ?? [];
+    $blocked = array_values(array_filter($conflicts, fn($c) => $c['key'] === 'conflict_blocked_period'))[0] ?? [];
+
+    check(($blocked['params']['name'] ?? '') === $name, 'blocked period reported, name sent as data', $preview['json'] ?? $preview['body']);
+    check(str_starts_with($preview['body'], '{'), 'JSON response, not HTML');
 });
 
 echo "\n{$passes} passed, {$failures} failed\n";

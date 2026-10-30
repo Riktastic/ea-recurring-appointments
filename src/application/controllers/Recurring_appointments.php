@@ -7,7 +7,7 @@
  * ---------------------------------------------------------------------------- */
 
 require_once APPPATH . 'libraries/Recurrence_rule.php';
-require_once APPPATH . 'libraries/Series_conflict_checker.php';
+require_once APPPATH . 'libraries/Recurring_series.php';
 
 /**
  * Recurring appointments controller.
@@ -24,7 +24,10 @@ require_once APPPATH . 'libraries/Series_conflict_checker.php';
  * - recurring_appointments/update   Apply modal changes to this and following / all occurrences.
  * - recurring_appointments/delete   Delete one, this and following, or all occurrences.
  * - recurring_appointments/detach   Turn one occurrence into a regular single appointment.
+ * - recurring_appointments/markers  Which appointments on the calendar belong to a series (for the ↻ marker).
  * - recurring_appointments/install  Create the tables (admins only).
+ *
+ * The series work itself is in the Recurring_series library, shared with the REST API (Appointment_series_api_v1).
  *
  * CLI: php index.php recurring_appointments install|uninstall|status
  *
@@ -34,11 +37,11 @@ class Recurring_appointments extends EA_Controller
 {
     public const VERSION = '1.0.0';
 
-    private const CONFLICT_MODES = ['abort', 'skip', 'force'];
+    private const CONFLICT_MODES = Recurring_series::CONFLICT_MODES;
 
-    private const NOTIFY_MODES = ['none', 'first', 'all'];
+    private const NOTIFY_MODES = Recurring_series::NOTIFY_MODES;
 
-    private const SCOPES = ['single', 'following', 'all'];
+    private const SCOPES = Recurring_series::SCOPES;
 
     /**
      * Same whitelist as Calendar::$allowed_customer_fields.
@@ -63,20 +66,6 @@ class Recurring_appointments extends EA_Controller
         'custom_field_5',
     ];
 
-    /**
-     * Appointment fields that are copied to every occurrence.
-     */
-    private array $template_fields = [
-        'location',
-        'meeting_link',
-        'notes',
-        'color',
-        'status',
-        'id_users_provider',
-        'id_users_customer',
-        'id_services',
-    ];
-
     public function __construct()
     {
         parent::__construct();
@@ -89,15 +78,11 @@ class Recurring_appointments extends EA_Controller
         $this->load->model('providers_model');
         $this->load->model('services_model');
 
-        $this->load->library('notifications');
-        $this->load->library('synchronization');
-        $this->load->library('webhooks_client');
+        // The series work itself (expand, conflicts, create, delete, sync and e-mails), shared with the REST API.
+        $this->load->library('recurring_series');
 
-        // Not every Easy!Appointments release ships these, load them only when present.
-        ra_load_optional('model', 'blocked_periods_model');
-        ra_load_optional('model', 'working_plan_exceptions_model');
+        // Not every Easy!Appointments release ships this, load it only when present.
         ra_load_optional('library', 'permissions');
-        ra_load_optional('library', 'jitsi_client');
     }
 
     /**
@@ -179,7 +164,7 @@ class Recurring_appointments extends EA_Controller
 
             ra_authorize_event_write(null, $appointment['id_users_provider'] ?? null);
 
-            [$rule, $occurrences] = $this->expand(request('rule'), $appointment);
+            [$rule, $occurrences] = $this->recurring_series->expand(request('rule'), $appointment);
 
             json_response([
                 'success' => true,
@@ -232,7 +217,7 @@ class Recurring_appointments extends EA_Controller
             ra_authorize_event_write(null, $appointment['id_users_provider'] ?? null);
 
             // Validate the rule before a new customer gets written.
-            [$rule, $occurrences] = $this->expand(request('rule'), $appointment);
+            [$rule, $occurrences] = $this->recurring_series->expand(request('rule'), $appointment);
 
             if (empty($occurrences)) {
                 throw new InvalidArgumentException(ra_lang('error_no_occurrences'));
@@ -257,76 +242,20 @@ class Recurring_appointments extends EA_Controller
 
             $appointment['id_users_customer'] = $this->save_customer(request('customer_data'), $appointment);
 
-            $template = $this->template($appointment);
-
-            // Jitsi integration, same as the core calendar: one meeting link for the whole series.
-            if (
-                isset($this->jitsi_client) &&
-                setting('jitsi_enabled') === '1' &&
-                empty($template['meeting_link'])
-            ) {
-                $template['meeting_link'] = $this->jitsi_client->generate_link();
-            }
-
-            $start = new DateTimeImmutable($appointment['start_datetime']);
-            $duration = $this->duration_minutes($appointment);
-
-            $created_ids = [];
-            $skipped = [];
-
-            $this->db->trans_begin();
-
-            try {
-                $series_id = $this->appointment_series_model->insert_series([
-                    'rule' => json_encode($rule->to_array()),
-                    'start_date' => $start->format('Y-m-d'),
-                    'start_time' => $start->format('H:i:s'),
-                    'duration' => $duration,
-                    'id_users_provider' => (int) $template['id_users_provider'],
-                    'id_users_customer' => (int) $template['id_users_customer'],
-                    'id_services' => (int) $template['id_services'],
-                    'id_users_created_by' => (int) session('user_id') ?: null,
-                ]);
-
-                foreach ($occurrences as $occurrence) {
-                    if (!empty($occurrence['conflicts']) && $conflict_mode === 'skip') {
-                        $skipped[] = $occurrence;
-                        continue;
-                    }
-
-                    $record = array_merge($template, [
-                        'start_datetime' => $occurrence['start_datetime'],
-                        'end_datetime' => $occurrence['end_datetime'],
-                        'is_unavailability' => false,
-                    ]);
-
-                    $appointment_id = $this->appointments_model->save($record);
-
-                    $this->appointment_series_model->link(
-                        $series_id,
-                        $appointment_id,
-                        $occurrence['sequence'],
-                        $occurrence['date'],
-                    );
-
-                    $created_ids[] = $appointment_id;
-                }
-
-                $this->db->trans_commit();
-            } catch (Throwable $e) {
-                $this->db->trans_rollback();
-
-                throw $e;
-            }
-
-            // External side effects only after the commit, so that a rollback cannot leave orphan calendar events.
-            $this->after_save($created_ids, $notify, false);
+            $result = $this->recurring_series->create(
+                $appointment,
+                $rule,
+                $occurrences,
+                $conflict_mode,
+                $notify,
+                (int) session('user_id') ?: null,
+            );
 
             json_response([
                 'success' => true,
-                'series_id' => $series_id,
-                'created' => count($created_ids),
-                'skipped' => $skipped,
+                'series_id' => $result['series_id'],
+                'created' => count($result['created_ids']),
+                'skipped' => $result['skipped'],
                 'forced' => $conflict_mode === 'force' ? count($conflicting) : 0,
             ]);
         } catch (Throwable $e) {
@@ -370,14 +299,22 @@ class Recurring_appointments extends EA_Controller
 
             $series = $this->appointment_series_model->find($series_id);
 
-            $occurrences = array_map(
-                fn($row) => [
-                    'id' => (int) $row['id'],
-                    'sequence' => (int) $row['sequence'],
-                    'start_datetime' => $row['start_datetime'],
-                    'end_datetime' => $row['end_datetime'],
-                ],
-                $this->appointment_series_model->get_occurrences($series_id),
+            // Only occurrences the user may see (a series booked with "any provider" can span several providers).
+            $visible = $this->visible_provider_ids();
+
+            $occurrences = array_values(
+                array_map(
+                    fn($row) => [
+                        'id' => (int) $row['id'],
+                        'sequence' => (int) $row['sequence'],
+                        'start_datetime' => $row['start_datetime'],
+                        'end_datetime' => $row['end_datetime'],
+                    ],
+                    array_filter(
+                        $this->appointment_series_model->get_occurrences($series_id),
+                        fn($row) => $visible === null || in_array((int) $row['id_users_provider'], $visible, true),
+                    ),
+                ),
             );
 
             $position = array_search($appointment_id, array_column($occurrences, 'id'), true);
@@ -423,22 +360,9 @@ class Recurring_appointments extends EA_Controller
 
             $ids = array_slice(array_values(array_unique(array_map('intval', request('appointment_ids') ?: []))), 0, 2000);
 
-            // Same visibility as the calendar: providers see their own, secretaries those of their providers.
-            $provider_ids = null;
-
-            if (session('role_slug') === DB_SLUG_PROVIDER) {
-                $provider_ids = [(int) session('user_id')];
-            } elseif (session('role_slug') === DB_SLUG_SECRETARY) {
-                $this->load->model('secretaries_model');
-                $provider_ids = array_map(
-                    'intval',
-                    $this->secretaries_model->find((int) session('user_id'))['providers'] ?? [],
-                );
-            }
-
             json_response([
                 'success' => true,
-                'series' => (object) $this->appointment_series_model->find_series_ids($ids, $provider_ids),
+                'series' => (object) $this->appointment_series_model->find_series_ids($ids, $this->visible_provider_ids()),
             ]);
         } catch (Throwable $e) {
             $this->fail($e);
@@ -449,7 +373,7 @@ class Recurring_appointments extends EA_Controller
      * Apply the values of the appointment modal to several occurrences.
      *
      * The start time, duration and the other fields come from the modal. When the opened occurrence is moved to another
-     * day, every occurrence in scope moves by the same number of days (see move_series()).
+     * day, every occurrence in scope moves by the same number of days (see Recurring_series::plan_update()).
      *
      * Request: appointment_data (array with id), customer_data (array|null), scope (following|all),
      * conflict_mode (abort|skip|force), notify (none|first|all).
@@ -484,53 +408,19 @@ class Recurring_appointments extends EA_Controller
 
             $current = $this->appointments_model->find($appointment_id);
 
-            $targets = $this->scope_occurrences($series_id, $current, $scope);
-
-            $new_start = new DateTimeImmutable($appointment['start_datetime']);
-            $duration = $this->duration_minutes($appointment);
-
-            // Moving the opened occurrence to another day moves every target by the same number of days.
-            $day_offset = (int) (new DateTimeImmutable(substr($current['start_datetime'], 0, 10)))
-                ->diff(new DateTimeImmutable($new_start->format('Y-m-d')))
-                ->format('%r%a');
+            $plan = $this->recurring_series->plan_update($series_id, $current, $appointment, $scope);
 
             // Every target needs to be writable by the current user, also when the provider changes.
-            foreach ($targets as $target) {
+            foreach ($plan['planned'] as $target) {
                 ra_authorize_event_write($target['id'], $appointment['id_users_provider'] ?? null);
             }
 
-            $planned = [];
-
-            foreach ($targets as $target) {
-                $date = (new DateTimeImmutable(substr($target['start_datetime'], 0, 10)))
-                    ->modify(sprintf('%+d days', $day_offset))
-                    ->format('Y-m-d');
-
-                $start = new DateTimeImmutable($date . ' ' . $new_start->format('H:i:s'));
-
-                $planned[] = [
-                    'id' => (int) $target['id'],
-                    'sequence' => (int) $target['sequence'],
-                    'date' => $date,
-                    'start_datetime' => $start->format('Y-m-d H:i:s'),
-                    'end_datetime' => $start->modify('+' . $duration . ' minutes')->format('Y-m-d H:i:s'),
-                ];
-            }
-
-            $planned = $this->attach_conflicts(
-                (int) $appointment['id_users_provider'],
-                $planned,
-                array_column($planned, 'id'),
-            );
-
-            $conflicting = array_values(array_filter($planned, fn($o) => !empty($o['conflicts'])));
-
-            if ($conflicting && $conflict_mode === 'abort') {
+            if ($plan['conflict_count'] && $conflict_mode === 'abort') {
                 json_response([
                     'success' => false,
                     'conflict' => true,
-                    'occurrences' => $planned,
-                    'conflict_count' => count($conflicting),
+                    'occurrences' => $plan['planned'],
+                    'conflict_count' => $plan['conflict_count'],
                 ]);
 
                 return;
@@ -538,74 +428,19 @@ class Recurring_appointments extends EA_Controller
 
             $appointment['id_users_customer'] = $this->save_customer(request('customer_data'), $appointment);
 
-            $template = $this->template($appointment);
-
-            $updated_ids = [];
-            $skipped = [];
-
-            // Moving to another provider removes the events from the old provider's synced calendar. This talks to
-            // external calendars, so it runs outside the transaction and only for occurrences that will be saved.
-            foreach ($planned as $occurrence) {
-                if (
-                    (empty($occurrence['conflicts']) || $conflict_mode !== 'skip') &&
-                    method_exists($this->synchronization, 'remove_appointment_on_provider_change')
-                ) {
-                    $this->synchronization->remove_appointment_on_provider_change(
-                        $occurrence['id'],
-                        $template['id_users_provider'],
-                    );
-                }
-            }
-
-            $this->db->trans_begin();
-
-            try {
-                foreach ($planned as $occurrence) {
-                    if (!empty($occurrence['conflicts']) && $conflict_mode === 'skip') {
-                        $skipped[] = $occurrence;
-                        continue;
-                    }
-
-                    $this->appointments_model->save(
-                        array_merge($template, [
-                            'id' => $occurrence['id'],
-                            'start_datetime' => $occurrence['start_datetime'],
-                            'end_datetime' => $occurrence['end_datetime'],
-                            'is_unavailability' => false,
-                        ]),
-                    );
-
-                    $updated_ids[] = $occurrence['id'];
-                }
-
-                $series_values = [
-                    'start_time' => $new_start->format('H:i:s'),
-                    'duration' => $duration,
-                    'id_users_provider' => (int) $template['id_users_provider'],
-                    'id_users_customer' => (int) $template['id_users_customer'],
-                    'id_services' => (int) $template['id_services'],
-                ];
-
-                if ($day_offset === 0) {
-                    // The edited values become the template of the series.
-                    $this->appointment_series_model->update_series($series_id, $series_values);
-                } else {
-                    $this->move_series($series_id, $planned, $updated_ids, $day_offset, $series_values);
-                }
-
-                $this->db->trans_commit();
-            } catch (Throwable $e) {
-                $this->db->trans_rollback();
-
-                throw $e;
-            }
-
-            $this->after_save($updated_ids, $notify, true);
+            $result = $this->recurring_series->apply_update(
+                $series_id,
+                $plan,
+                $appointment,
+                $conflict_mode,
+                $notify,
+                (int) session('user_id') ?: null,
+            );
 
             json_response([
                 'success' => true,
-                'updated' => count($updated_ids),
-                'skipped' => $skipped,
+                'updated' => count($result['updated_ids']),
+                'skipped' => $result['skipped'],
             ]);
         } catch (Throwable $e) {
             $this->fail($e);
@@ -644,40 +479,13 @@ class Recurring_appointments extends EA_Controller
 
             $current = $this->appointments_model->find($appointment_id);
 
-            $targets = $this->scope_occurrences($series_id, $current, $scope);
+            $targets = $this->recurring_series->scope_occurrences($series_id, $current, $scope);
 
             foreach ($targets as $target) {
                 ra_authorize_event_write($target['id'], null);
             }
 
-            $settings = $this->company_settings();
-            $deleted = 0;
-
-            foreach (array_values($targets) as $index => $target) {
-                $appointment = $this->appointments_model->find((int) $target['id']);
-                $provider = $this->providers_model->find($appointment['id_users_provider']);
-
-                $this->appointments_model->delete($appointment['id']);
-                $this->appointment_series_model->unlink((int) $appointment['id']);
-                $deleted++;
-
-                if ($notify === 'all' || ($notify === 'first' && $index === 0)) {
-                    $this->notifications->notify_appointment_deleted(
-                        $appointment,
-                        $this->services_model->find($appointment['id_services']),
-                        $provider,
-                        $this->customers_model->find($appointment['id_users_customer']),
-                        $settings,
-                        $cancellation_reason,
-                    );
-                }
-
-                $this->synchronization->sync_appointment_deleted($appointment, $provider);
-
-                $this->webhooks_client->trigger(WEBHOOK_APPOINTMENT_DELETE, $appointment);
-            }
-
-            $this->appointment_series_model->delete_if_empty($series_id);
+            $deleted = $this->recurring_series->delete($series_id, $targets, $notify, $cancellation_reason);
 
             json_response([
                 'success' => true,
@@ -716,211 +524,6 @@ class Recurring_appointments extends EA_Controller
             json_response(['success' => true]);
         } catch (Throwable $e) {
             $this->fail($e);
-        }
-    }
-
-    /**
-     * Expand the rule into occurrences (with conflicts) for the appointment that was filled in the modal.
-     *
-     * @return array{0: Recurrence_rule, 1: array}
-     */
-    private function expand(array $raw_rule, array $appointment): array
-    {
-        foreach (['start_datetime', 'end_datetime', 'id_users_provider', 'id_services'] as $field) {
-            if (empty($appointment[$field])) {
-                throw new InvalidArgumentException(ra_lang('error_invalid_request', ['detail' => $field]));
-            }
-        }
-
-        if (!validate_datetime($appointment['start_datetime']) || !validate_datetime($appointment['end_datetime'])) {
-            throw new InvalidArgumentException(
-                ra_lang('error_invalid_date', ['value' => $appointment['start_datetime']]),
-            );
-        }
-
-        $start = new DateTimeImmutable($appointment['start_datetime']);
-        $duration = $this->duration_minutes($appointment);
-
-        $rule = Recurrence_rule::from_array($raw_rule, $start->format('Y-m-d'));
-
-        $occurrences = [];
-
-        foreach ($rule->dates($start->format('Y-m-d')) as $index => $date) {
-            $occurrence_start = new DateTimeImmutable($date . ' ' . $start->format('H:i:s'));
-
-            $occurrences[] = [
-                'sequence' => $index + 1,
-                'date' => $date,
-                'start_datetime' => $occurrence_start->format('Y-m-d H:i:s'),
-                'end_datetime' => $occurrence_start->modify('+' . $duration . ' minutes')->format('Y-m-d H:i:s'),
-            ];
-        }
-
-        return [$rule, $this->attach_conflicts((int) $appointment['id_users_provider'], $occurrences)];
-    }
-
-    /**
-     * Add a "conflicts" list to every planned occurrence, using one query per data source for the whole range.
-     *
-     * @param int[] $exclude_ids Appointments that are being moved and must not conflict with themselves.
-     */
-    private function attach_conflicts(int $provider_id, array $occurrences, array $exclude_ids = []): array
-    {
-        if (empty($occurrences)) {
-            return $occurrences;
-        }
-
-        $first_date = min(array_column($occurrences, 'date'));
-        $last_date = substr(max(array_column($occurrences, 'end_datetime')), 0, 10);
-
-        $provider = $this->providers_model->find($provider_id);
-
-        $checker = new Series_conflict_checker(
-            json_decode($provider['settings']['working_plan'] ?? '[]', true) ?: [],
-            $this->working_plan_exceptions($provider),
-            $this->appointment_series_model->get_provider_events($provider_id, $first_date, $last_date),
-            isset($this->blocked_periods_model)
-                ? $this->blocked_periods_model->get_for_period($first_date, $last_date)
-                : [],
-        );
-
-        // Occurrences of the same request must not overlap each other either (e.g. overnight appointments).
-        $planned = [];
-
-        foreach ($occurrences as &$occurrence) {
-            $occurrence['conflicts'] = $checker->check(
-                $occurrence['start_datetime'],
-                $occurrence['end_datetime'],
-                $exclude_ids,
-            );
-
-            foreach ($planned as $other) {
-                if (
-                    $occurrence['start_datetime'] < $other['end_datetime'] &&
-                    $occurrence['end_datetime'] > $other['start_datetime']
-                ) {
-                    $occurrence['conflicts'][] = Series_conflict_checker::conflict(
-                        Series_conflict_checker::APPOINTMENT,
-                        'conflict_same_series',
-                        ['sequence' => $other['sequence']],
-                    );
-                }
-            }
-
-            $planned[] = $occurrence;
-        }
-
-        unset($occurrence);
-
-        return $occurrences;
-    }
-
-    /**
-     * Working plan exceptions keyed by date. Easy!Appointments 1.6 keeps them in a table, 1.5 in the provider settings.
-     */
-    private function working_plan_exceptions(array $provider): array
-    {
-        if (isset($this->working_plan_exceptions_model) && $this->db->table_exists('working_plan_exceptions')) {
-            return $this->working_plan_exceptions_model->get_by_provider((int) $provider['id']);
-        }
-
-        return json_decode($provider['settings']['working_plan_exceptions'] ?? '[]', true) ?: [];
-    }
-
-    /**
-     * Store a move to another day in the series.
-     *
-     * When every occurrence moved, the rule of the series turns along (e.g. every Wednesday → every Thursday). When only
-     * "this and following" moved, those occurrences become a new series with the moved rule, and the earlier ones keep
-     * the old rule. Occurrences that were skipped because of a conflict stay where they were, in the old series.
-     */
-    private function move_series(
-        int $series_id,
-        array $planned,
-        array $moved_ids,
-        int $day_offset,
-        array $series_values,
-    ): void {
-        $series = $this->appointment_series_model->find($series_id);
-        $moved = array_values(array_filter($planned, fn($o) => in_array($o['id'], $moved_ids, true)));
-
-        if (empty($moved)) {
-            return;
-        }
-
-        $remaining = count($this->appointment_series_model->get_occurrences($series_id)) - count($moved);
-
-        $rule = Recurrence_rule::shift($series['rule'], $day_offset);
-        $series_values['start_date'] = $moved[0]['date'];
-
-        if (isset($rule['count'])) {
-            $rule['count'] = count($moved);
-        }
-
-        $series_values['rule'] = json_encode($rule);
-
-        if ($remaining === 0) {
-            $this->appointment_series_model->update_series($series_id, $series_values);
-            $target_series_id = $series_id;
-        } else {
-            $target_series_id = $this->appointment_series_model->insert_series(
-                $series_values + ['id_users_created_by' => (int) session('user_id') ?: null],
-            );
-
-            if (isset($series['rule']['count'])) {
-                $old_rule = $series['rule'];
-                $old_rule['count'] = $remaining;
-                $this->appointment_series_model->update_series($series_id, ['rule' => json_encode($old_rule)]);
-            }
-        }
-
-        foreach ($moved as $index => $occurrence) {
-            $this->appointment_series_model->link($target_series_id, $occurrence['id'], $index + 1, $occurrence['date']);
-        }
-    }
-
-    /**
-     * Occurrences that a scoped edit or delete applies to.
-     */
-    private function scope_occurrences(int $series_id, array $current, string $scope): array
-    {
-        if ($scope === 'single') {
-            return [['id' => (int) $current['id'], 'sequence' => 0, 'start_datetime' => $current['start_datetime']]];
-        }
-
-        return $this->appointment_series_model->get_occurrences(
-            $series_id,
-            $scope === 'following' ? $current['start_datetime'] : null,
-        );
-    }
-
-    /**
-     * Sync, notify and trigger webhooks for saved occurrences, like Calendar::save_appointment does for one.
-     */
-    private function after_save(array $appointment_ids, string $notify, bool $manage_mode): void
-    {
-        $settings = $this->company_settings();
-
-        foreach (array_values($appointment_ids) as $index => $appointment_id) {
-            $appointment = $this->appointments_model->find($appointment_id);
-            $provider = $this->providers_model->find($appointment['id_users_provider']);
-            $customer = $this->customers_model->find($appointment['id_users_customer']);
-            $service = $this->services_model->find($appointment['id_services']);
-
-            $this->synchronization->sync_appointment_saved($appointment, $service, $provider, $customer, $settings);
-
-            if ($notify === 'all' || ($notify === 'first' && $index === 0)) {
-                $this->notifications->notify_appointment_saved(
-                    $appointment,
-                    $service,
-                    $provider,
-                    $customer,
-                    $settings,
-                    $manage_mode,
-                );
-            }
-
-            $this->webhooks_client->trigger(WEBHOOK_APPOINTMENT_SAVE, $appointment);
         }
     }
 
@@ -976,49 +579,25 @@ class Recurring_appointments extends EA_Controller
         }
     }
 
-    private function template(array $appointment): array
+    /**
+     * Providers whose appointments the current user may see, like the calendar: providers their own, secretaries those
+     * of their providers, everyone else all (null).
+     *
+     * @return int[]|null
+     */
+    private function visible_provider_ids(): ?array
     {
-        $template = [];
-
-        foreach ($this->template_fields as $field) {
-            $template[$field] = $appointment[$field] ?? null;
+        if (session('role_slug') === DB_SLUG_PROVIDER) {
+            return [(int) session('user_id')];
         }
 
-        if (empty($template['id_users_customer'])) {
-            throw new InvalidArgumentException(ra_lang('error_no_customer'));
+        if (session('role_slug') === DB_SLUG_SECRETARY) {
+            $this->load->model('secretaries_model');
+
+            return array_map('intval', $this->secretaries_model->find((int) session('user_id'))['providers'] ?? []);
         }
 
-        return $template;
-    }
-
-    private function duration_minutes(array $appointment): int
-    {
-        $minimum = defined('EVENT_MINIMUM_DURATION') ? EVENT_MINIMUM_DURATION : 5;
-
-        $duration = (int) round(
-            (strtotime($appointment['end_datetime']) - strtotime($appointment['start_datetime'])) / 60,
-        );
-
-        if ($duration < $minimum) {
-            throw new InvalidArgumentException(ra_lang('error_duration', ['min' => $minimum]));
-        }
-
-        return $duration;
-    }
-
-    private function company_settings(): array
-    {
-        $company_color = setting('company_color');
-        $default_color = defined('DEFAULT_COMPANY_COLOR') ? DEFAULT_COMPANY_COLOR : null;
-
-        return [
-            'company_name' => setting('company_name'),
-            'company_link' => setting('company_link'),
-            'company_email' => setting('company_email'),
-            'company_color' => !empty($company_color) && $company_color != $default_color ? $company_color : null,
-            'date_format' => setting('date_format'),
-            'time_format' => setting('time_format'),
-        ];
+        return null;
     }
 
     private function require_series_id(int $appointment_id): int

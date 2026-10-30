@@ -23,11 +23,15 @@
         return strings['ra_' + key] ?? key;
     }
 
+    /**
+     * HTML-escape a value for use in element content and in quoted attributes (quotes included). The setting values
+     * end up in value="..." attributes, so quotes must be escaped too.
+     */
     function escape(value) {
-        const element = document.createElement('div');
-        element.textContent = value ?? '';
-
-        return element.innerHTML;
+        return String(value ?? '').replace(
+            /[&<>"']/g,
+            (char) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[char],
+        );
     }
 
     function toggleSwitch(name, label) {
@@ -53,6 +57,14 @@
                             ${toggleSwitch('staff_enabled', 'settings_staff_enabled')}
                             <div class="ms-4 mb-3">
                                 ${toggleSwitch('staff_default_on', 'settings_staff_default_on')}
+                                <div class="mt-2" style="max-width: 420px;">
+                                    <label class="form-label" for="ra-setting-max-occurrences">${escape(t('settings_max_occurrences'))}</label>
+                                    <input type="number" class="form-control" id="ra-setting-max-occurrences"
+                                           data-field="recurring_appointments_max_occurrences"
+                                           min="2" max="${Number(config.max_occurrences_limit) || 1000}"
+                                           value="${escape(settings.max_occurrences)}">
+                                    <div class="form-text text-muted">${escape(t('settings_max_occurrences_hint'))}</div>
+                                </div>
                             </div>
 
                             ${toggleSwitch('booking_enabled', 'settings_booking_enabled')}
@@ -91,6 +103,7 @@
         const bookingEnabled = document.getElementById('ra-setting-booking-enabled').checked;
 
         document.getElementById('ra-setting-staff-default-on').disabled = !staffEnabled;
+        document.getElementById('ra-setting-max-occurrences').disabled = !staffEnabled;
         document
             .querySelectorAll('#ra-settings-booking input, #ra-settings-booking select')
             .forEach((field) => (field.disabled = !bookingEnabled));

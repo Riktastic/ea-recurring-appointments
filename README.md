@@ -1,12 +1,13 @@
 # Recurring appointments for Easy!Appointments
 
-Repeating appointments for [Easy!Appointments](https://easyappointments.org): every Wednesday, every two weeks, the
-first Monday of the month, and so on.
+Repeating appointments for [Easy!Appointments](https://easyappointments.org): every day, every Wednesday, every two
+weeks, the first Monday of the month, every year, and so on.
 
 - Each appointment in a series is a normal appointment, so e-mails and calendar sync keep working.
 - Dates that clash with the provider's schedule are shown first, never silently double-booked.
 - Change or delete one appointment, the following ones, or the whole series.
 - Optional: customers can book a repeating appointment on the booking page.
+- A REST API for series, next to the core appointments API.
 - In English, Dutch, German, French and Spanish (other languages fall back to English).
 
 Works with Easy!Appointments 1.6 and PHP 8.2 or newer.

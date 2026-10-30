@@ -14,13 +14,17 @@
  *
  * Supported rules (array form, as stored in the "rule" column of the series table):
  *
+ * - Daily:           ['frequency' => 'daily', 'interval' => 3]                             every 3rd day
  * - Weekly:          ['frequency' => 'weekly', 'interval' => 2, 'weekdays' => [3]]          every 2nd Wednesday
  * - Monthly weekday: ['frequency' => 'monthly_weekday', 'interval' => 1, 'nth' => 1, 'weekday' => 1]
  *                                                                                           first Monday of the month
  *                    'nth' => -1 means the last weekday of the month.
  * - Monthly day:     ['frequency' => 'monthly_day', 'interval' => 1, 'day' => 15]           the 15th of every month
+ * - Yearly:          ['frequency' => 'yearly', 'interval' => 1, 'month' => 3, 'day' => 14]  every 14 March
+ *                                                                                           (29 February: leap years only)
  *
- * Every rule needs exactly one end condition: 'until' => 'Y-m-d' (inclusive) or 'count' => int.
+ * Every rule needs exactly one end condition: 'until' => 'Y-m-d' (inclusive) or 'count' => int. A series has at most
+ * $max_occurrences dates (DEFAULT_MAX_OCCURRENCES unless the caller passes the administrator's setting).
  *
  * Weekdays use ISO-8601 numbers: 1 = Monday ... 7 = Sunday.
  *
@@ -28,18 +32,35 @@
  */
 class Recurrence_rule
 {
+    public const FREQUENCY_DAILY = 'daily';
+
     public const FREQUENCY_WEEKLY = 'weekly';
 
     public const FREQUENCY_MONTHLY_WEEKDAY = 'monthly_weekday';
 
     public const FREQUENCY_MONTHLY_DAY = 'monthly_day';
 
+    public const FREQUENCY_YEARLY = 'yearly';
+
+    public const FREQUENCIES = [
+        self::FREQUENCY_DAILY,
+        self::FREQUENCY_WEEKLY,
+        self::FREQUENCY_MONTHLY_WEEKDAY,
+        self::FREQUENCY_MONTHLY_DAY,
+        self::FREQUENCY_YEARLY,
+    ];
+
     /**
-     * Hard limit of occurrences per series, so that a typo in the end date cannot create thousands of rows.
+     * Default limit of occurrences per series, so that a typo in the end date cannot create thousands of rows. Enough
+     * for a daily series over a year. Administrators can change it (setting "max_occurrences") up to MAX_LIMIT.
      */
-    public const MAX_OCCURRENCES = 260;
+    public const DEFAULT_MAX_OCCURRENCES = 400;
+
+    public const MAX_LIMIT = 1000;
 
     public const MAX_INTERVAL = 52;
+
+    public readonly int $max_occurrences;
 
     public readonly string $frequency;
 
@@ -54,11 +75,13 @@ class Recurrence_rule
 
     public readonly ?int $day;
 
+    public readonly ?int $month;
+
     public readonly ?string $until;
 
     public readonly ?int $count;
 
-    private function __construct(array $rule)
+    private function __construct(array $rule, int $max_occurrences)
     {
         $this->frequency = $rule['frequency'];
         $this->interval = $rule['interval'];
@@ -66,8 +89,10 @@ class Recurrence_rule
         $this->nth = $rule['nth'];
         $this->weekday = $rule['weekday'];
         $this->day = $rule['day'];
+        $this->month = $rule['month'];
         $this->until = $rule['until'];
         $this->count = $rule['count'];
+        $this->max_occurrences = $max_occurrences;
     }
 
     /**
@@ -75,24 +100,22 @@ class Recurrence_rule
      *
      * @param array $rule Raw rule (e.g. from the request).
      * @param string $start_date First date of the series (Y-m-d), used to fill in defaults.
+     * @param int|null $max_occurrences Most dates a series may have; null for DEFAULT_MAX_OCCURRENCES. Clamped to
+     *                                  1 - MAX_LIMIT.
      *
      * @return self
      *
      * @throws InvalidArgumentException
      */
-    public static function from_array(array $rule, string $start_date): self
+    public static function from_array(array $rule, string $start_date, ?int $max_occurrences = null): self
     {
+        $max_occurrences = max(1, min(self::MAX_LIMIT, $max_occurrences ?? self::DEFAULT_MAX_OCCURRENCES));
+
         $start = self::parse_date($start_date, 'start date');
 
         $frequency = (string) ($rule['frequency'] ?? '');
 
-        if (
-            !in_array(
-                $frequency,
-                [self::FREQUENCY_WEEKLY, self::FREQUENCY_MONTHLY_WEEKDAY, self::FREQUENCY_MONTHLY_DAY],
-                true,
-            )
-        ) {
+        if (!in_array($frequency, self::FREQUENCIES, true)) {
             throw new Recurrence_rule_exception('error_frequency', [], 'Unsupported recurrence frequency: ' . $frequency);
         }
 
@@ -113,6 +136,7 @@ class Recurrence_rule
             'nth' => null,
             'weekday' => null,
             'day' => null,
+            'month' => null,
             'until' => null,
             'count' => null,
         ];
@@ -173,7 +197,20 @@ class Recurrence_rule
             $normalized['day'] = $day;
         }
 
-        $until = isset($rule['until']) && $rule['until'] !== '' ? (string) $rule['until'] : null;
+        if ($frequency === self::FREQUENCY_YEARLY) {
+            $month = self::int_or_null($rule['month'] ?? null) ?? (int) $start->format('n');
+            $day = self::int_or_null($rule['day'] ?? null) ?? (int) $start->format('j');
+
+            // 2000 is a leap year, so 29 February is accepted (and only used in leap years).
+            if ($month < 1 || $month > 12 || $day < 1 || !checkdate($month, $day, 2000)) {
+                throw new Recurrence_rule_exception('error_day', [], 'The day of the month must be between 1 and 31.');
+            }
+
+            $normalized['month'] = $month;
+            $normalized['day'] = $day;
+        }
+
+        $until =isset($rule['until']) && $rule['until'] !== '' ? (string) $rule['until'] : null;
         $count = self::int_or_null($rule['count'] ?? null);
 
         if (($until === null) === ($count === null)) {
@@ -199,18 +236,18 @@ class Recurrence_rule
         }
 
         if ($count !== null) {
-            if ($count < 1 || $count > self::MAX_OCCURRENCES) {
+            if ($count < 1 || $count > $max_occurrences) {
                 throw new Recurrence_rule_exception(
                     'error_count',
-                    ['max' => self::MAX_OCCURRENCES],
-                    'The number of occurrences must be between 1 and ' . self::MAX_OCCURRENCES . '.',
+                    ['max' => $max_occurrences],
+                    'The number of occurrences must be between 1 and ' . $max_occurrences . '.',
                 );
             }
 
             $normalized['count'] = $count;
         }
 
-        return new self($normalized);
+        return new self($normalized, $max_occurrences);
     }
 
     /**
@@ -226,6 +263,7 @@ class Recurrence_rule
                 'nth' => $this->nth,
                 'weekday' => $this->weekday,
                 'day' => $this->day,
+                'month' => $this->month,
                 'until' => $this->until,
                 'count' => $this->count,
             ],
@@ -256,7 +294,14 @@ class Recurrence_rule
             $rule['weekday'] = $turn((int) $rule['weekday']);
         }
 
-        if (isset($rule['day']) && $rule['day'] + $days >= 1 && $rule['day'] + $days <= 31) {
+        if (($rule['frequency'] ?? '') === self::FREQUENCY_YEARLY && isset($rule['month'], $rule['day'])) {
+            // Every 14 March → every 15 March (counted in a leap year, so that 29 February works too).
+            $moved = (new DateTimeImmutable(sprintf('2000-%02d-%02d', $rule['month'], $rule['day'])))->modify(
+                sprintf('%+d days', $days),
+            );
+            $rule['month'] = (int) $moved->format('n');
+            $rule['day'] = (int) $moved->format('j');
+        } elseif (isset($rule['day']) && $rule['day'] + $days >= 1 && $rule['day'] + $days <= 31) {
             $rule['day'] = (int) $rule['day'] + $days;
         }
 
@@ -279,14 +324,14 @@ class Recurrence_rule
      *
      * @return string[] Y-m-d dates, ascending.
      *
-     * @throws InvalidArgumentException When the rule produces more than MAX_OCCURRENCES dates.
+     * @throws InvalidArgumentException When the rule produces more than $max_occurrences dates.
      */
     public function dates(string $start_date): array
     {
         $start = self::parse_date($start_date, 'start date');
         $until = $this->until !== null ? self::parse_date($this->until, 'end date') : null;
         // With an until-date, expand one past the maximum so that an over-long rule is refused instead of truncated.
-        $limit = $this->count ?? self::MAX_OCCURRENCES + 1;
+        $limit = $this->count ?? $this->max_occurrences + 1;
 
         $dates = [];
 
@@ -317,17 +362,18 @@ class Recurrence_rule
                 }
             }
 
-            // Safety net against rules that never yield a date (cannot happen with validated rules).
-            if ($period > self::MAX_OCCURRENCES * self::MAX_INTERVAL) {
+            // Safety net against rules that never yield a date (cannot happen with validated rules; 29 February
+            // every 52 years still yields one within this many periods).
+            if ($period > (self::MAX_LIMIT + 1) * self::MAX_INTERVAL * 4) {
                 break;
             }
         }
 
-        if (count($dates) > self::MAX_OCCURRENCES) {
+        if (count($dates) > $this->max_occurrences) {
             throw new Recurrence_rule_exception(
                 'error_too_many',
-                ['max' => self::MAX_OCCURRENCES],
-                'This rule creates more than ' . self::MAX_OCCURRENCES . ' occurrences, choose an earlier end date.',
+                ['max' => $this->max_occurrences],
+                'This rule creates more than ' . $this->max_occurrences . ' occurrences, choose an earlier end date.',
             );
         }
 
@@ -336,11 +382,12 @@ class Recurrence_rule
 
     private function period_start(DateTimeImmutable $start, int $period): DateTimeImmutable
     {
-        if ($this->frequency === self::FREQUENCY_WEEKLY) {
-            return self::week_start($start)->modify('+' . $period . ' weeks');
-        }
-
-        return $start->modify('first day of this month')->modify('+' . $period . ' months');
+        return match ($this->frequency) {
+            self::FREQUENCY_DAILY => $start->modify('+' . $period . ' days'),
+            self::FREQUENCY_WEEKLY => self::week_start($start)->modify('+' . $period . ' weeks'),
+            self::FREQUENCY_YEARLY => $start->setDate((int) $start->format('Y') + $period, 1, 1),
+            default => $start->modify('first day of this month')->modify('+' . $period . ' months'),
+        };
     }
 
     /**
@@ -348,6 +395,17 @@ class Recurrence_rule
      */
     private function candidates_for_period(DateTimeImmutable $start, int $period): array
     {
+        if ($this->frequency === self::FREQUENCY_DAILY) {
+            return [$start->modify('+' . $period . ' days')];
+        }
+
+        if ($this->frequency === self::FREQUENCY_YEARLY) {
+            $year = (int) $start->format('Y') + $period;
+
+            // 29 February only exists in leap years; skip the other years instead of rolling over to 1 March.
+            return checkdate($this->month, $this->day, $year) ? [$start->setDate($year, $this->month, $this->day)] : [];
+        }
+
         if ($this->frequency === self::FREQUENCY_WEEKLY) {
             $week_start = self::week_start($start)->modify('+' . $period . ' weeks');
 

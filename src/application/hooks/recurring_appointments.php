@@ -86,6 +86,7 @@ function recurring_appointments_page_script(object $CI, string $output, string $
         'settings' => $settings,
         'defaults' => RA_SETTING_DEFAULTS,
         'booking_max_limit' => RA_BOOKING_MAX_LIMIT,
+        'max_occurrences_limit' => 1000, // Recurrence_rule::MAX_LIMIT, without loading the class on every page.
     ];
 
     // JSON_HEX_* keeps "</script>" and quotes inside translations from breaking out of the script element.
@@ -145,7 +146,10 @@ function recurring_appointments_after_register(object $CI, string $output): stri
 
     $CI->load->library('recurring_booking');
 
-    $result = $CI->recurring_booking->extend($hash, $repeat);
+    $any_provider_value = defined('ANY_PROVIDER') ? ANY_PROVIDER : 'any-provider';
+    $any_provider = (string) ($post_data['appointment']['id_users_provider'] ?? '') === (string) $any_provider_value;
+
+    $result = $CI->recurring_booking->extend($hash, $repeat, $any_provider);
 
     if ($result === null) {
         return $output;
@@ -179,18 +183,26 @@ function recurring_appointments_confirmation(object $CI, string $output): string
     $booked = $result['booked'] ?? [];
     $skipped = $result['skipped'] ?? [];
 
+    // Name the provider per date only when not every date has the same one ("Any provider").
+    $show_providers = count(array_unique(array_column($booked, 'provider'))) > 1;
+
     $html = '<div id="ra-booking-result" class="text-start mx-auto my-4" style="max-width: 420px;">';
 
     if (count($booked) > 1) {
         $html .= '<h5 class="mb-2">&#8635; ' . html_escape(ra_lang('booking_booked_title', ['count' => count($booked)])) . '</h5><ul class="mb-3">';
 
-        foreach ($booked as $datetime) {
-            $html .= '<li>' . html_escape($format($datetime)) . '</li>';
+        foreach ($booked as $item) {
+            $text = $format($item['start']) . ($show_providers ? ' – ' . $item['provider'] : '');
+            $html .= '<li>' . html_escape($text) . '</li>';
         }
 
         $html .= '</ul>';
     } elseif ($skipped) {
         $html .= '<p class="mb-2">' . html_escape(ra_lang('booking_only_first')) . '</p>';
+    }
+
+    if (!empty($result['capped'])) {
+        $html .= '<p class="mb-2">' . html_escape(ra_lang('booking_capped', ['max' => $result['capped']])) . '</p>';
     }
 
     if ($skipped) {

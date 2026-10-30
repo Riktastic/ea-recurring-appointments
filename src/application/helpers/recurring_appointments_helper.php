@@ -74,6 +74,7 @@ if (!function_exists('ra_setting')) {
      * - staff_default_on:  the Repeat switch starts switched on for new appointments.
      * - booking_enabled:   customers can choose a repeat on the public booking page.
      * - booking_max:       the most appointments a customer can book at once (the first one included).
+     * - max_occurrences:   the most appointments one series can have (staff), 2 - 1000.
      * - booking_notify:    "all" sends the usual confirmation e-mail for every extra appointment (each with its own
      *                      cancel and reschedule link), "first" only the one for the first appointment.
      */
@@ -83,6 +84,7 @@ if (!function_exists('ra_setting')) {
         'booking_enabled' => '0',
         'booking_max' => '8',
         'booking_notify' => 'all',
+        'max_occurrences' => '400',
     ]);
 
     /**

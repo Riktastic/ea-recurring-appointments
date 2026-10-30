@@ -15,8 +15,9 @@
  * dates for the same customer, service, provider and time, but only where the core availability library would also
  * offer that time slot on the booking page. Dates that are not free are skipped and reported.
  *
- * Customers can only choose from a fixed list of patterns (PATTERNS) and up to the administrator's maximum number of
- * appointments, so a public request can never create more than that.
+ * Customers can only choose from a fixed list of patterns (PATTERNS), optionally with extra weekdays and an end date,
+ * and never more than the administrator's maximum number of appointments, so a public request can never create more
+ * than that.
  *
  * @package Libraries
  */
@@ -26,10 +27,12 @@ class Recurring_booking
      * Patterns a customer can choose, mapped to a recurrence rule (the weekday comes from the first appointment).
      */
     public const PATTERNS = [
+        'daily' => ['frequency' => 'daily', 'interval' => 1],
         'weekly' => ['frequency' => 'weekly', 'interval' => 1],
         'every_2_weeks' => ['frequency' => 'weekly', 'interval' => 2],
         'every_4_weeks' => ['frequency' => 'weekly', 'interval' => 4],
         'monthly' => ['frequency' => 'monthly_weekday', 'interval' => 1],
+        'yearly' => ['frequency' => 'yearly', 'interval' => 1],
     ];
 
     /**
@@ -83,14 +86,24 @@ class Recurring_booking
      * Book the following dates of a repeat that a customer chose on the booking page.
      *
      * @param string $appointment_hash Hash of the appointment Booking::register just created.
-     * @param array $repeat Request values: pattern (a PATTERNS key) and count (appointments in total, first included).
+     * @param array $repeat Request values:
+     *                      - pattern:  a PATTERNS key;
+     *                      - weekdays: optional extra ISO weekdays for the weekly patterns (the first appointment's
+     *                                  weekday is always included);
+     *                      - count:    appointments in total, the first included; or
+     *                      - until:    last date (Y-m-d, inclusive).
+     *                      Either way never more than max_count() appointments.
+     * @param bool $any_provider The customer chose "Any provider": a date on which the first appointment's provider is
+     *                           not free may go to another provider of the service.
      *
      * @return array|null Null when nothing was asked or allowed, otherwise:
-     *                    ['series_id' => int, 'booked' => string[] start datetimes (first included),
-     *                     'skipped' => string[] start datetimes that were not free,
-     *                     'timezone' => string the customer's timezone, which booked and skipped are in]
+     *                    ['series_id' => int,
+     *                     'booked' => list of ['start' => datetime, 'provider' => name] (first included),
+     *                     'skipped' => datetimes that were not free,
+     *                     'capped' => int|null the maximum, when the end date asked for more,
+     *                     'timezone' => string the customer's timezone, which all datetimes are in]
      */
-    public function extend(string $appointment_hash, array $repeat): ?array
+    public function extend(string $appointment_hash, array $repeat, bool $any_provider = false): ?array
     {
         if (ra_setting('booking_enabled') !== '1' || !$this->CI->appointment_series_model->is_installed()) {
             return null;
@@ -98,12 +111,22 @@ class Recurring_booking
 
         $pattern = (string) ($repeat['pattern'] ?? '');
         $count = (int) ($repeat['count'] ?? 0);
+        $until = (string) ($repeat['until'] ?? '');
+        $max = self::max_count();
 
-        if (!isset(self::PATTERNS[$pattern]) || $count < 2) {
+        if (!isset(self::PATTERNS[$pattern])) {
             return null; // "Does not repeat" or a tampered request: the single appointment stays as it is.
         }
 
-        $count = min($count, self::max_count());
+        if ($until !== '') {
+            $until_date = DateTimeImmutable::createFromFormat('!Y-m-d', $until);
+
+            if (!$until_date || $until_date->format('Y-m-d') !== $until) {
+                return null;
+            }
+        } elseif ($count < 2) {
+            return null;
+        }
 
         $first = $this->CI->appointments_model->get(['hash' => $appointment_hash])[0] ?? null;
 
@@ -119,18 +142,51 @@ class Recurring_booking
         $start = new DateTimeImmutable($first['start_datetime']);
         $duration = (int) round((strtotime($first['end_datetime']) - $start->getTimestamp()) / 60);
 
-        $raw_rule = self::PATTERNS[$pattern] + ['count' => $count];
+        $raw_rule = self::PATTERNS[$pattern];
+
+        if ($raw_rule['frequency'] === 'weekly') {
+            // The first appointment's weekday always stays in; extra weekdays are optional.
+            $weekdays = array_map('intval', is_array($repeat['weekdays'] ?? null) ? $repeat['weekdays'] : []);
+            $weekdays[] = (int) $start->format('N');
+            $raw_rule['weekdays'] = array_values(array_unique(array_filter($weekdays, fn($day) => $day >= 1 && $day <= 7)));
+        }
 
         if ($raw_rule['frequency'] === 'monthly_weekday') {
             // "The 5th Tuesday" does not exist in most months, so the last week of the month becomes "last Tuesday".
             $nth = (int) ceil((int) $start->format('j') / 7);
             $raw_rule['nth'] = $nth === 5 ? -1 : $nth;
+            $raw_rule['weekday'] = (int) $start->format('N');
         }
 
-        $rule = Recurrence_rule::from_array($raw_rule, $start->format('Y-m-d'));
+        if ($raw_rule['frequency'] === 'yearly') {
+            $raw_rule['month'] = (int) $start->format('n');
+            $raw_rule['day'] = (int) $start->format('j');
+        }
+
+        // Expand one more than the maximum, so that an end date asking for more can be reported as capped. The end
+        // date itself is applied afterwards, so that a far-away end date is capped instead of refused.
+        $rule = Recurrence_rule::from_array($raw_rule + ['count' => $max + 1], $start->format('Y-m-d'), $max + 1);
+
+        $dates = $rule->dates($start->format('Y-m-d'));
+
+        if ($until !== '') {
+            $dates = array_values(array_filter($dates, fn($date) => $date <= $until));
+        } else {
+            $dates = array_slice($dates, 0, min($count, $max));
+        }
+
+        $capped = count($dates) > $max ? $max : null;
+        $dates = array_slice($dates, 0, $max);
+
+        if (count($dates) < 2) {
+            return null; // E.g. an end date before the second date: the single appointment stays as it is.
+        }
+
+        // What is stored and shown for the series: the end the customer chose.
+        $stored_rule = $raw_rule + ($until !== '' ? ['until' => $until] : ['count' => count($dates)]);
 
         // The first date is the appointment that already exists.
-        $dates = array_slice($rule->dates($start->format('Y-m-d')), 1);
+        $dates = array_slice($dates, 1);
 
         $service = $this->CI->services_model->find((int) $first['id_services']);
         $provider = $this->CI->providers_model->find((int) $first['id_users_provider']);
@@ -141,7 +197,7 @@ class Recurring_booking
             $template[$field] = $first[$field] ?? null;
         }
 
-        $booked = [$first['start_datetime']];
+        $booked = [['start' => $first['start_datetime'], 'provider' => $provider]];
         $skipped = [];
         $created_ids = [];
 
@@ -149,7 +205,7 @@ class Recurring_booking
 
         try {
             $series_id = $this->CI->appointment_series_model->insert_series([
-                'rule' => json_encode($rule->to_array()),
+                'rule' => json_encode($stored_rule),
                 'start_date' => $start->format('Y-m-d'),
                 'start_time' => $start->format('H:i:s'),
                 'duration' => $duration,
@@ -164,13 +220,16 @@ class Recurring_booking
             foreach ($dates as $index => $date) {
                 $occurrence_start = new DateTimeImmutable($date . ' ' . $start->format('H:i:s'));
 
-                if (!$this->is_bookable($occurrence_start, $service, $provider)) {
-                    $skipped[] = $occurrence_start->format('Y-m-d H:i:s');
+                $occurrence_provider = $this->free_provider($occurrence_start, $service, $provider, $any_provider);
+
+                if ($occurrence_provider === null) {
+                    $skipped[] = ['start' => $occurrence_start->format('Y-m-d H:i:s'), 'provider' => $provider];
                     continue;
                 }
 
                 $appointment_id = $this->CI->appointments_model->save(
                     array_merge($template, [
+                        'id_users_provider' => (int) $occurrence_provider['id'],
                         'start_datetime' => $occurrence_start->format('Y-m-d H:i:s'),
                         'end_datetime' => $occurrence_start->modify('+' . $duration . ' minutes')->format('Y-m-d H:i:s'),
                         'is_unavailability' => false,
@@ -179,8 +238,8 @@ class Recurring_booking
 
                 $this->CI->appointment_series_model->link($series_id, $appointment_id, $index + 2, $date);
 
-                $created_ids[] = $appointment_id;
-                $booked[] = $occurrence_start->format('Y-m-d H:i:s');
+                $created_ids[$appointment_id] = $occurrence_provider;
+                $booked[] = ['start' => $occurrence_start->format('Y-m-d H:i:s'), 'provider' => $occurrence_provider];
             }
 
             $this->CI->db->trans_commit();
@@ -190,23 +249,61 @@ class Recurring_booking
             throw $e;
         }
 
-        $this->after_save($created_ids, $service, $provider);
+        $this->after_save($created_ids, $service);
 
         // Times are stored in the provider's timezone; the customer sees them in their own, like in the e-mails.
         $customer = $this->CI->customers_model->find((int) $first['id_users_customer']);
         $customer_timezone = (string) ($customer['timezone'] ?? '') ?: (string) $provider['timezone'];
 
-        $to_customer = fn(array $datetimes) => array_map(
-            fn(string $datetime) => $this->to_timezone($datetime, (string) $provider['timezone'], $customer_timezone),
-            $datetimes,
+        $to_customer = fn(array $item) => $this->to_timezone(
+            $item['start'],
+            (string) $item['provider']['timezone'],
+            $customer_timezone,
         );
 
         return [
             'series_id' => $series_id,
-            'booked' => $to_customer($booked),
-            'skipped' => $to_customer($skipped),
+            'booked' => array_map(
+                fn(array $item) => [
+                    'start' => $to_customer($item),
+                    'provider' => trim(($item['provider']['first_name'] ?? '') . ' ' . ($item['provider']['last_name'] ?? '')),
+                ],
+                $booked,
+            ),
+            'skipped' => array_map($to_customer, $skipped),
+            'capped' => $capped,
             'timezone' => $customer_timezone,
         ];
+    }
+
+    /**
+     * The provider for a following date: the first appointment's provider when that time is free for them. When the
+     * customer chose "Any provider", otherwise another provider of the service who is free, like the booking page
+     * would pick. Null when nobody is free.
+     */
+    private function free_provider(DateTimeImmutable $start, array $service, array $provider, bool $any_provider): ?array
+    {
+        if ($this->is_bookable($start, $service, $provider)) {
+            return $provider;
+        }
+
+        if (!$any_provider) {
+            return null;
+        }
+
+        foreach ($this->CI->providers_model->get_available_providers(true) as $candidate) {
+            $offers_service = in_array((int) $service['id'], array_map('intval', $candidate['services'] ?? []), true);
+
+            if (
+                $offers_service &&
+                (int) $candidate['id'] !== (int) $provider['id'] &&
+                $this->is_bookable($start, $service, $candidate)
+            ) {
+                return $this->CI->providers_model->find((int) $candidate['id']);
+            }
+        }
+
+        return null;
     }
 
     private function to_timezone(string $datetime, string $from, string $to): string
@@ -240,8 +337,10 @@ class Recurring_booking
 
     /**
      * Calendar sync, e-mails and webhooks for the extra appointments, like Booking::register does for the first one.
+     *
+     * @param array<int, array> $created Appointment ID => its provider.
      */
-    private function after_save(array $appointment_ids, array $service, array $provider): void
+    private function after_save(array $created, array $service): void
     {
         $company_color = setting('company_color');
         $default_color = defined('DEFAULT_COMPANY_COLOR') ? DEFAULT_COMPANY_COLOR : null;
@@ -257,7 +356,7 @@ class Recurring_booking
 
         $notify = ra_setting('booking_notify') === 'all';
 
-        foreach ($appointment_ids as $appointment_id) {
+        foreach ($created as $appointment_id => $provider) {
             // External services must not undo the booking: a failing mail server or calendar is logged, not thrown.
             try {
                 $appointment = $this->CI->appointments_model->find($appointment_id);

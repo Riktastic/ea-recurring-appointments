@@ -206,6 +206,27 @@ class Appointment_series_model extends EA_Model
     }
 
     /**
+     * Series rows (rule decoded), newest first, for the REST API.
+     *
+     * @param array $where Column => value filters on the series table.
+     */
+    public function get_series(array $where = [], ?int $limit = null, ?int $offset = null): array
+    {
+        $rows = $this->db
+            ->where($where)
+            ->order_by('id', 'DESC')
+            ->get('appointment_series', $limit, $offset)
+            ->result_array();
+
+        foreach ($rows as &$row) {
+            $this->cast($row);
+            $row['rule'] = json_decode($row['rule'], true) ?: [];
+        }
+
+        return $rows;
+    }
+
+    /**
      * Series ID of an appointment, or null when it is not part of a series.
      */
     public function find_series_id(int $appointment_id): ?int

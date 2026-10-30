@@ -1,7 +1,7 @@
 # End-to-end test
 
 `http_test.php` drives a real Easy!Appointments over HTTP, the way the browser does (session cookie and CSRF token),
-and checks the results in the database. Currently it runs 38 checks:
+and checks the results in the database. Currently it runs 51 checks:
 
 - With the extension installed, a core reinstall (`console install`, which runs every migration down and up again)
   still works, and the extension install is idempotent.
@@ -13,6 +13,13 @@ and checks the results in the database. Currently it runs 38 checks:
   calendar markers, and deleting one occurrence or the entire series.
 - Settings: the defaults, staff switched off, and customer bookings: off, every week with a taken date skipped, the
   confirmation list, an unknown pattern, the maximum, and rescheduling.
+- Daily and yearly patterns, the configurable maximum per series, customers with several weekdays and an end date,
+  an end date capped at the maximum, "any provider" moving a busy date to a second provider (created through the
+  core REST API), customers booking every day (day off skipped) and every year (past the booking limit skipped), and
+  the series REST API (create, list, show, change all, move the following ones, 409 on conflicts, delete following,
+  delete, 401).
+- Security: SQL injection attempts on IDs, dates, API filters and the booking request; script payloads in settings
+  (page config) and in a blocked period name.
 - Permissions: a provider may not book for another provider, and logged-out requests are refused.
 - Translated UI and errors in Dutch and German, and the English fallback for a language without extension
   translations (Greek).

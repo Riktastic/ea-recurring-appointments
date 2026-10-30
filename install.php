@@ -7,23 +7,35 @@
  *   php install.php /path/to/easyappointments [--no-db] [--dry-run]
  *   php install.php /path/to/easyappointments --uninstall [--keep-db] [--dry-run]
  *
- * Install copies everything under src/ into the installation, registers the hook with one guarded include line in
- * application/config/hooks.php, and creates the database tables. It is safe to run again, e.g. after an
- * Easy!Appointments update or to upgrade the extension.
+ * Install copies everything under src/ into the installation, adds one guarded include line to
+ * application/config/hooks.php (the pages) and one to application/config/routes.php (the REST API), and creates the
+ * database tables. It is safe to run again, e.g. after an Easy!Appointments update or to upgrade the extension.
  *
- * Uninstall removes the hook line and the copied files, and drops the two tables unless --keep-db is given. The
- * appointments themselves always stay; they become regular single appointments.
+ * Uninstall removes those lines and the copied files, and drops the tables and settings unless --keep-db is given.
+ * The appointments themselves always stay; they become regular single appointments.
  *
  * @license     https://opensource.org/licenses/GPL-3.0 - GPLv3
  * ---------------------------------------------------------------------------- */
 
-const HOOK_MARKER = 'recurring_appointments_hooks.php';
-
-const HOOK_LINES = [
-    '',
-    '// Recurring appointments extension (remove these lines to disable it).',
-    "if (is_file(APPPATH . 'config/recurring_appointments_hooks.php')) { include APPPATH . 'config/recurring_appointments_hooks.php'; }",
+/**
+ * Core config file => the extension file it includes. Each include is guarded by is_file(), so removing the
+ * extension's files never breaks the core config.
+ */
+const CONFIG_INCLUDES = [
+    'application/config/hooks.php' => 'recurring_appointments_hooks.php',
+    'application/config/routes.php' => 'recurring_appointments_routes.php',
 ];
+
+const INCLUDE_COMMENT = '// Recurring appointments extension (remove these lines to disable it).';
+
+function include_lines(string $file): array
+{
+    return [
+        '',
+        INCLUDE_COMMENT,
+        "if (is_file(APPPATH . 'config/{$file}')) { include APPPATH . 'config/{$file}'; }",
+    ];
+}
 
 if (PHP_SAPI !== 'cli') {
     exit("Run this script from the command line.\n");
@@ -96,20 +108,29 @@ function install(string $target, string $source, array $files, bool $no_db, bool
         }
     }
 
-    $hooks_file = $target . '/application/config/hooks.php';
-    $hooks = file_get_contents($hooks_file);
+    foreach (CONFIG_INCLUDES as $config_file => $included) {
+        $path = $target . '/' . $config_file;
 
-    if (str_contains($hooks, HOOK_MARKER)) {
-        echo "Hook already registered in application/config/hooks.php\n";
-    } else {
-        echo "Registering the hook in application/config/hooks.php\n";
+        if (!is_file($path)) {
+            echo "  Skipped {$config_file}: not found\n";
+            continue;
+        }
+
+        $content = file_get_contents($path);
+
+        if (str_contains($content, $included)) {
+            echo "Already registered in {$config_file}\n";
+            continue;
+        }
+
+        echo "Registering in {$config_file}\n";
 
         if (!$dry_run) {
-            $eol = str_contains($hooks, "\r\n") ? "\r\n" : "\n";
-            $hooks = rtrim($hooks) . $eol . implode($eol, HOOK_LINES) . $eol;
+            $eol = str_contains($content, "\r\n") ? "\r\n" : "\n";
+            $content = rtrim($content) . $eol . implode($eol, include_lines($included)) . $eol;
 
-            if (file_put_contents($hooks_file, $hooks) === false) {
-                fail('Could not write application/config/hooks.php.');
+            if (file_put_contents($path, $content) === false) {
+                fail("Could not write {$config_file}.");
             }
         }
     }
@@ -140,21 +161,25 @@ function uninstall(string $target, array $files, bool $keep_db, bool $dry_run): 
         }
     }
 
-    $hooks_file = $target . '/application/config/hooks.php';
-    $hooks = file_get_contents($hooks_file);
+    foreach (CONFIG_INCLUDES as $config_file => $included) {
+        $path = $target . '/' . $config_file;
+        $content = is_file($path) ? file_get_contents($path) : '';
 
-    if (str_contains($hooks, HOOK_MARKER)) {
-        echo "Removing the hook from application/config/hooks.php\n";
+        if (!str_contains($content, $included)) {
+            continue;
+        }
 
-        $lines = preg_split('/\r\n|\n/', $hooks);
+        echo "Removing the line from {$config_file}\n";
+
+        $lines = preg_split('/\r\n|\n/', $content);
         $kept = array_filter(
             $lines,
-            fn($line) => !str_contains($line, HOOK_MARKER) && !str_contains($line, 'Recurring appointments extension'),
+            fn($line) => !str_contains($line, $included) && !str_contains($line, INCLUDE_COMMENT),
         );
 
         if (!$dry_run) {
-            $eol = str_contains($hooks, "\r\n") ? "\r\n" : "\n";
-            file_put_contents($hooks_file, rtrim(implode($eol, $kept)) . $eol);
+            $eol = str_contains($content, "\r\n") ? "\r\n" : "\n";
+            file_put_contents($path, rtrim(implode($eol, $kept)) . $eol);
         }
     }
 

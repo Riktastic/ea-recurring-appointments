@@ -193,7 +193,7 @@ test('requires exactly one end condition', function () {
 });
 
 test('rejects invalid input', function () {
-    assert_throws(fn() => dates(['frequency' => 'daily', 'count' => 2], '2026-11-04'), 'frequency');
+    assert_throws(fn() => dates(['frequency' => 'hourly', 'count' => 2], '2026-11-04'), 'frequency');
     assert_throws(fn() => dates(['frequency' => 'weekly', 'interval' => 0, 'count' => 2], '2026-11-04'), 'interval');
     assert_throws(fn() => dates(['frequency' => 'weekly', 'weekdays' => [8], 'count' => 2], '2026-11-04'), 'Weekdays');
     assert_throws(fn() => dates(['frequency' => 'monthly_weekday', 'nth' => 6, 'count' => 2], '2026-11-04'), 'week of');
@@ -208,11 +208,48 @@ test('refuses rules that exceed the maximum instead of truncating', function () 
         fn() => dates(['frequency' => 'weekly', 'weekdays' => [1, 2, 3, 4, 5], 'until' => '2028-12-31'], '2026-11-02'),
         'more than',
     );
-    assert_throws(fn() => dates(['frequency' => 'weekly', 'count' => 261], '2026-11-04'), 'between 1 and 260');
+    assert_throws(fn() => dates(['frequency' => 'weekly', 'count' => 401], '2026-11-04'), 'between 1 and 400');
 });
 
 test('maximum count is allowed', function () {
-    assert_same(260, count(dates(['frequency' => 'weekly', 'count' => 260], '2026-11-04')));
+    assert_same(400, count(dates(['frequency' => 'weekly', 'count' => 400], '2026-11-04')));
+});
+
+test('the administrator can set another maximum', function () {
+    $rule = ['frequency' => 'daily', 'until' => '2027-12-31'];
+
+    assert_throws(fn() => Recurrence_rule::from_array($rule, '2026-11-04', 300)->dates('2026-11-04'), 'more than 300');
+    assert_same(423, count(Recurrence_rule::from_array($rule, '2026-11-04', 1000)->dates('2026-11-04')));
+    // Never above the hard limit, whatever is configured.
+    assert_same(1000, Recurrence_rule::from_array(['frequency' => 'daily', 'count' => 5], '2026-11-04', 99999)->max_occurrences);
+});
+
+test('every day, and every 3rd day until an end date', function () {
+    assert_same(['2026-11-04', '2026-11-05', '2026-11-06'], dates(['frequency' => 'daily', 'count' => 3], '2026-11-04'));
+    assert_same(
+        ['2026-11-30', '2026-12-03', '2026-12-06'],
+        dates(['frequency' => 'daily', 'interval' => 3, 'until' => '2026-12-07'], '2026-11-30'),
+    );
+});
+
+test('every year on the same date, every 2 years', function () {
+    assert_same(['2026-11-04', '2027-11-04', '2028-11-04'], dates(['frequency' => 'yearly', 'count' => 3], '2026-11-04'));
+    assert_same(
+        ['2026-03-14', '2028-03-14'],
+        dates(['frequency' => 'yearly', 'interval' => 2, 'until' => '2029-12-31'], '2026-03-14'),
+    );
+});
+
+test('yearly on 29 February only in leap years', function () {
+    assert_same(['2028-02-29', '2032-02-29'], dates(['frequency' => 'yearly', 'count' => 2], '2028-02-29'));
+    assert_throws(fn() => dates(['frequency' => 'yearly', 'month' => 2, 'day' => 30, 'count' => 2], '2026-11-04'), 'day of');
+});
+
+test('shift moves a yearly rule to the next day', function () {
+    assert_same(
+        ['frequency' => 'yearly', 'month' => 3, 'day' => 1, 'count' => 2],
+        Recurrence_rule::shift(['frequency' => 'yearly', 'month' => 2, 'day' => 28, 'count' => 2], 2),
+    );
 });
 
 test('nth_weekday_of_month helper', function () {
@@ -402,11 +439,15 @@ test('every string key used in the code exists in English', function () use ($en
     }
 
     // Keys that the code builds from a prefix.
-    foreach (['weekly', 'every_2_weeks', 'every_4_weeks', 'monthly'] as $pattern) {
+    foreach (['daily', 'weekly', 'every_2_weeks', 'every_4_weeks', 'monthly', 'yearly'] as $pattern) {
         $used[] = 'booking_' . $pattern;
     }
 
-    foreach (['summary_weekly', 'summary_monthly_weekday', 'summary_monthly_day'] as $summary) {
+    foreach (['days', 'weeks', 'months', 'years'] as $unit) {
+        $used[] = $unit;
+    }
+
+    foreach (['summary_daily', 'summary_weekly', 'summary_monthly_weekday', 'summary_monthly_day', 'summary_yearly'] as $summary) {
         $used[] = $summary;
         $used[] = $summary . '_one';
     }
@@ -430,7 +471,7 @@ test('rule errors carry key and params', function () {
         dates(['frequency' => 'weekly', 'count' => 999], '2026-11-04');
     } catch (Recurrence_rule_exception $e) {
         assert_same('error_count', $e->key);
-        assert_same(['max' => 260], $e->params);
+        assert_same(['max' => 400], $e->params);
 
         return;
     }
@@ -503,11 +544,14 @@ test('install twice, then uninstall, against a fake installation', function () {
     }
 
     $original_hooks = "<?php\n\$hook['post_system'][] = [];\n";
+    // Windows line endings, to check that the installer keeps them.
+    $original_routes = "<?php\r\n\$route['default_controller'] = 'booking';\r\n";
 
     file_put_contents($target . '/index.php', '<?php');
     file_put_contents($target . '/application/controllers/Calendar.php', '<?php');
     file_put_contents($target . '/application/config/app.php', "<?php\n\$config['version'] = '1.6.1';\n");
     file_put_contents($target . '/application/config/hooks.php', $original_hooks);
+    file_put_contents($target . '/application/config/routes.php', $original_routes);
 
     try {
         [$code, $output] = run_installer([$target, '--no-db']);
@@ -517,6 +561,16 @@ test('install twice, then uninstall, against a fake installation', function () {
 
         $hooks = file_get_contents($target . '/application/config/hooks.php');
         assert_same(1, substr_count($hooks, "include APPPATH . 'config/recurring_appointments_hooks.php'"), 'hook lines');
+
+        $routes = file_get_contents($target . '/application/config/routes.php');
+        assert_same(1, substr_count($routes, "include APPPATH . 'config/recurring_appointments_routes.php'"), 'route lines');
+
+        // The routes file must add the API routes when routes.php is evaluated.
+        $route = [];
+        (function () use ($target, &$route) {
+            include $target . '/application/config/recurring_appointments_routes.php';
+        })();
+        assert_same('api/v1/appointment_series_api_v1/store', $route['api/v1/appointment_series']['post'] ?? null);
 
         foreach (
             [
@@ -541,6 +595,7 @@ test('install twice, then uninstall, against a fake installation', function () {
         [$code, $output] = run_installer([$target, '--uninstall', '--keep-db']);
         assert_same(0, $code, $output);
         assert_same($original_hooks, file_get_contents($target . '/application/config/hooks.php'), 'hooks.php restored');
+        assert_same($original_routes, file_get_contents($target . '/application/config/routes.php'), 'routes.php restored');
         assert_same(false, is_file($target . '/application/controllers/Recurring_appointments.php'), 'controller removed');
         assert_same(true, is_file($target . '/application/controllers/Calendar.php'), 'core file kept');
 

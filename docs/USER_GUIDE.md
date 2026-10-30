@@ -14,9 +14,11 @@ On the calendar, appointments that belong to a series have a **↻** in front of
 2. Fill in the appointment as usual: service, provider, customer, date and time.
 3. Switch on **Repeat this appointment**.
 4. Choose how often:
+   - **Daily**: every day, or every 2, 3 … days.
    - **Weekly**: pick the weekday(s) and *every 1 week* (or every 2, 3 … weeks).
    - **Monthly on a weekday**: for example *the first Monday*.
    - **Monthly on a day number**: for example *the 15th*. Months without that day (like the 31st in April) are skipped.
+   - **Yearly (same date)**: every year on the date of the appointment.
 5. Choose when it ends: **After** a number of times, or **On date**.
 6. Optional: **Preview dates** shows every date and warns about problems.
 7. Choose **Notify customer and provider**: *Once (first occurrence)* is usually best.
@@ -33,8 +35,8 @@ Nothing is ever double-booked without you choosing *Book anyway*.
 
 ## Change a repeating appointment
 
-Click the appointment, then **Edit**. At the top of the window you see for example *"Occurrence 3 of 10 of a
-repeating appointment (every week on Wednesday)"*.
+Click the appointment, then **Change series** (or **Edit**). At the top of the window you see for example
+*"Occurrence 3 of 10 of a repeating appointment (every week on Wednesday)"*.
 
 Change what you need (time, duration, notes, provider …), then press:
 
@@ -57,14 +59,20 @@ In the same window, open **Delete** and choose:
 - **Delete this and following**
 - **Delete entire series**
 
-You are always asked to confirm. The normal delete button in the small pop-up on the calendar deletes only that one
-appointment.
+You are always asked to confirm.
+
+The small pop-up that opens when you click an appointment on the calendar also has **Delete this and following** and
+**Delete entire series**. Its normal **Delete** button deletes only that one appointment.
 
 ## Customers booking a repeat (if your administrator switched it on)
 
-On the booking page, under the times, customers see **Repeat** with *Does not repeat*, *Every week*, *Every 2 weeks*,
-*Every 4 weeks* and *Every month (same weekday)*, and the number of appointments. Only times that are really free are
-booked. After booking, the customer sees which dates were booked and which were not available.
+On the booking page, under the times, customers see **Repeat** with *Does not repeat*, *Every day*, *Every week*,
+*Every 2 weeks*, *Every 4 weeks*, *Every month (same weekday)* and *Every year (same date)*. With the weekly choices they can add more days (for example Monday
+and Friday). They end it after a number of appointments or on a date. Only times that are really free are booked.
+After booking, the customer sees which dates were booked and which were not available.
+
+If the customer chose *any provider* and the first provider is busy on a date, another provider who offers the service
+and is free takes that date.
 
 These appointments show on your calendar with the **↻** and can be changed like any other series.
 
@@ -74,6 +82,7 @@ Settings → Booking, section **Repeating appointments** at the bottom. Press **
 
 - **Staff can create repeating appointments in the calendar**: on or off for staff.
 - **Switch "Repeat this appointment" on by default**: new appointments start with Repeat on.
+- **Most appointments in one series**: protects against a typo in the end date (400 by default, at most 1000).
 - **Customers can book a repeating appointment on the booking page**: shows the Repeat choice to customers.
 - **Most appointments per booking**: the most a customer can book at once (the first one included).
 - **Confirmation e-mails**: one e-mail per appointment (each with its own cancel link) or only for the first.
@@ -88,7 +97,7 @@ Roles).
 | *Conflicts with the provider's schedule on 2 of the 10 dates* | Two dates are not possible; choose skip, book anyway or cancel. |
 | *Every date conflicts with the provider's schedule* | No date is possible at this time. Choose another time. |
 | *The repeat pattern gives no dates before the end* | Check the chosen weekdays and the end date. |
-| *This would create more than 260 occurrences* | Choose an earlier end date or fewer times. |
+| *This would create more than 400 occurrences* | Choose an earlier end date or fewer times, or ask an administrator to raise the maximum. |
 | *You do not have permission to do this* | Your role may not add, change or delete appointments. Ask an administrator. |
 | *Your session has expired* | Reload the page and log in again. |
 | *This appointment is no longer part of a repeating series* | Someone detached or deleted it. Reload the calendar. |
